@@ -1,0 +1,114 @@
+[
+  {
+    "readiness_type": "session_preparation",
+    "applies_when": {
+      "entity_type": ["Event", "Meeting", "Session", "Workshop"],
+      "requires_preparation": true,
+      "name_not_contains": ["bill", "due date", "payment", "invoice"]
+    },
+    "evidence_required": [
+      "presentation_or_notes",
+      "topic_context"
+    ],
+    "urgency_windows": {
+      "high_hours_before": 72,
+      "urgent_hours_before": 24
+    }
+  },
+  {
+    "readiness_type": "meeting_readiness",
+    "applies_when": {
+      "entity_type": ["Meeting", "Event"],
+      "name_not_contains": ["bill", "due date", "payment", "invoice"]
+    },
+    "evidence_required": [
+      "agenda",
+      "attendees"
+    ],
+    "urgency_windows": {
+      "high_hours_before": 24,
+      "urgent_hours_before": 2
+    }
+  },
+  {
+    "readiness_type": "delivery_readiness",
+    "applies_when": {
+      "entity_type": ["Task", "ProjectMilestone"]
+    },
+    "evidence_required": [
+      "deliverable_file_or_link"
+    ],
+    "urgency_windows": {
+      "high_hours_before": 48,
+      "urgent_hours_before": 12
+    }
+  },
+  {
+    "readiness_type": "commitment_follow_up",
+    "applies_when": {
+      "entity_type": ["Commitment"]
+    },
+    "evidence_required": [
+      "reply_or_action"
+    ],
+    "urgency_windows": {
+      "high_hours_before": 24,
+      "urgent_hours_before": 4
+    }
+  },
+  {
+    "readiness_type": "travel_readiness",
+    "applies_when": {
+      "entity_type": ["Event", "Meeting"],
+      "has_location": true
+    },
+    "evidence_required": [
+      "reservations_or_travel_time"
+    ],
+    "urgency_windows": {
+      "high_hours_before": 168,
+      "urgent_hours_before": 48
+    }
+  },
+  {
+    "readiness_type": "decision_readiness",
+    "applies_when": {
+      "entity_type": ["Decision"]
+    },
+    "evidence_required": [
+      "stakeholder_input",
+      "alternatives"
+    ],
+    "urgency_windows": {
+      "high_hours_before": 96,
+      "urgent_hours_before": 24
+    }
+  },
+  {
+    "readiness_type": "bill_payment_reconciliation",
+    "applies_when": {
+      "entity_type": ["Bill"],
+      "status": "unpaid"
+    },
+    "evidence_required": ["matching_payment_transaction"],
+    "match_rules": [
+      "same_account_or_card",
+      "transaction_after_bill",
+      "amount_greater_than_or_equal_to_bill",
+      "payment_related_description"
+    ],
+    "urgency_windows": {
+      "high_hours_before": 72,
+      "urgent_hours_before": 24
+    }
+  },
+  {
+    "readiness_type": "low_balance_alert",
+    "applies_when": {
+      "entity_type": ["BankAccount"]
+    },
+    "balance_threshold": 10000,
+    "evidence_required": [],
+    "urgency_windows": {}
+  }
+]

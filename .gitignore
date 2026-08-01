@@ -1,0 +1,27 @@
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# IDEs
+.vscode/
+.idea/
+
+# Secrets and credentials
+.env
+credentials.json
+token.json
+
+# Databases
+*.duckdb
+*.db
+*.sqlite
+*.sqlite3
+
+# Vector DB
+chroma_db/
