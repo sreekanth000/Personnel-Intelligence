@@ -1,3 +1,0 @@
-This is a test document to trigger the Local FS ingestion.
-It contains important information about Project Beta.
-Project Beta is a secret project starting next month.

@@ -1,0 +1,76 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# uv
+.python-version
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment & Secrets (NEVER COMMIT REAL SECRETS)
+.env
+.env.local
+.env.*
+!.env.example
+*.pem
+*.key
+*.token
+*.json_token
+
+# Credentials & OAuth Tokens
+data/credentials/
+credentials.json
+gmail_token.json
+google_token.json
+
+# Local Data Stores & Databases (Persisted locally, ignored in VCS)
+data/*
+!data/raw/
+!data/raw/.gitkeep
+!data/exports/
+!data/exports/.gitkeep
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.duckdb*
+data/*.kuzu*
+data/world_model_graph/
+data/gmail_sync_state.db
+data/gmail_sync_cursor.json
+data/gmail_filter_config.json
+data/notes/
+
+# Frontend Node Modules & Build Artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+frontend/.env.*
+!frontend/.env.example
+
+# Test & Coverage Artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/

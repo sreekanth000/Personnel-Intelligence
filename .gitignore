@@ -2,6 +2,7 @@
 venv/
 .venv/
 env/
+ENV/
 
 # Python cache
 __pycache__/
@@ -14,14 +15,42 @@ __pycache__/
 
 # Secrets and credentials
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+*.token
+*.json_token
 credentials.json
 token.json
+gmail_token.json
+google_token.json
+data/credentials/
 
-# Databases
-*.duckdb
+# Databases and Local Data
+*.duckdb*
 *.db
+*.db-journal
+*.db-wal
 *.sqlite
 *.sqlite3
+*.kuzu*
+data/*.db
+data/*.duckdb*
+data/*.kuzu*
+data/world_model_graph/
+data/gmail_sync_state.db
+data/gmail_sync_cursor.json
+data/gmail_filter_config.json
+data/notes/
+data/raw/*
+!data/raw/.gitkeep
+data/exports/*
+!data/exports/.gitkeep
 
-# Vector DB
-chroma_db/
+# Node & Build
+node_modules/
+dist/
+build/
+frontend/node_modules/
+frontend/dist/
