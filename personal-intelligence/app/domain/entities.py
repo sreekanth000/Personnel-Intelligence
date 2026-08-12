@@ -148,7 +148,7 @@ class Event(Entity):
     """A calendar event, meeting, or scheduled occurrence."""
 
     entity_type: EntityType = Field(default=EntityType.EVENT, description="Always 'event'.")
-    starts_at: datetime = Field(description="When the event starts.")
+    starts_at: datetime | None = Field(default=None, description="When the event starts.")
     ends_at: datetime | None = Field(default=None, description="When the event ends.")
     location: str | None = Field(default=None, description="Where the event takes place.")
     attendees: list[str] = Field(default_factory=list, description="Entity IDs of attendees.")
