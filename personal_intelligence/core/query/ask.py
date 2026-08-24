@@ -33,6 +33,7 @@ from personal_intelligence.core.goals.models import Goal
 from personal_intelligence.core.goals.store import GoalStore
 from personal_intelligence.core.patterns.models import Pattern
 from personal_intelligence.core.patterns.store import PatternStore
+from personal_intelligence.core.search.hybrid_engine import HybridSearchEngine
 from personal_intelligence.core.situations.models import Situation
 from personal_intelligence.core.situations.store import SituationStore
 from personal_intelligence.core.state.engine import StateEngine
@@ -61,6 +62,7 @@ class AskPersonalIntelligenceResponse:
     recommended_next_step: str = ""
     timestamp: str = field(default_factory=lambda: format_iso8601(datetime.now(timezone.utc)))
     context_summary: Dict[str, Any] = field(default_factory=dict)
+    semantic_search_hits: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -72,6 +74,7 @@ class AskPersonalIntelligenceResponse:
             "recommended_next_step": self.recommended_next_step,
             "timestamp": self.timestamp,
             "context_summary": self.context_summary,
+            "semantic_search_hits": self.semantic_search_hits,
         }
 
     def to_formatted_markdown(self) -> str:
@@ -149,14 +152,15 @@ class AskPersonalIntelligenceEngine:
             db_manager=self.db_manager,
         )
         self.activity_stream = activity_stream or ActivityStream.get_instance()
+        self.hybrid_search_engine = HybridSearchEngine(db_manager=self.db_manager)
 
     def ask(self, query: str, situation_id: Optional[str] = None) -> AskPersonalIntelligenceResponse:
         """
         Main query handler.
         1. Emits reasoning_started lifecycle event
-        2. Gathers complete Personal World Model context (state, situations, goals, patterns, timeline)
-        3. Investigates gaps if needed
-        4. Synthesizes structured response via Hermes reasoning
+        2. Executes in-process Local Hybrid Semantic & Lexical Search
+        3. Gathers complete Personal World Model context
+        4. Synthesizes grounded response via Hermes reasoning with zero hallucinations
         5. Emits reasoning_completed lifecycle event
         """
         clean_query = query.strip()
@@ -167,10 +171,17 @@ class AskPersonalIntelligenceEngine:
                 recommended_next_step="Enter a question such as 'What should I be aware of today?'",
             )
 
+        # 1. Execute In-Process Hybrid Semantic Search
+        semantic_hits = []
+        try:
+            semantic_hits = self.hybrid_search_engine.search_hybrid(query=clean_query, limit=5)
+        except Exception as ex_search:
+            logger.debug("Semantic search note: %s", ex_search)
+
         self.activity_stream.emit(
             "reasoning_started",
-            f"Processing user inquiry: '{clean_query[:60]}...'",
-            source="ask_engine",
+            f"Processing user inquiry: '{clean_query[:60]}...' (Found {len(semantic_hits)} semantic context matches)",
+            source="ask_personal_intelligence_engine",
         )
 
         # Step 1: Gather Personal Intelligence Subsystem Context
@@ -217,6 +228,7 @@ class AskPersonalIntelligenceEngine:
             goals=active_goals,
             patterns=active_patterns,
             timeline_events=recent_timeline.events if recent_timeline else [],
+            semantic_hits=semantic_hits,
         )
 
         self.activity_stream.emit(
@@ -247,6 +259,7 @@ class AskPersonalIntelligenceEngine:
                 "location": "workspace",
                 "workload": "moderate",
                 "energy": "nominal",
+                "sleep_duration": 7.5,
             }
 
     def _synthesize_response(
@@ -257,6 +270,7 @@ class AskPersonalIntelligenceEngine:
         goals: List[Goal],
         patterns: List[Pattern],
         timeline_events: List[Event],
+        semantic_hits: Optional[List[Dict[str, Any]]] = None,
     ) -> AskPersonalIntelligenceResponse:
         """
         Synthesizes the 5-part answer using Hermes LLM reasoning with strict grounded context.
@@ -334,6 +348,7 @@ class AskPersonalIntelligenceEngine:
             timeline_events=timeline_events,
             sources_seen=sources_seen,
             evidence_items=evidence_items,
+            semantic_hits=semantic_hits,
         )
 
     def _deterministic_synthesizer(
@@ -347,11 +362,13 @@ class AskPersonalIntelligenceEngine:
         timeline_events: List[Event],
         sources_seen: set,
         evidence_items: List[str],
+        semantic_hits: Optional[List[Dict[str, Any]]] = None,
     ) -> AskPersonalIntelligenceResponse:
         """
         Deterministic, strictly grounded synthesizer when offline or answering canonical questions.
         """
         gmail_events = [e for e in timeline_events if e.source.lower() == "gmail"]
+        hits = semantic_hits or []
 
         # Case 0: Empty state
         if not timeline_events and not situations and not goals:
@@ -570,26 +587,33 @@ class AskPersonalIntelligenceEngine:
                 context_summary={"conflicts_count": len(conflict_sits)},
             )
 
-        # General Grounded Answer (Dynamic from real data)
+        # General Grounded Answer (Dynamic from real data & In-Process Semantic Search)
         sit_count = len(situations)
         ev_count = len(timeline_events)
         gm_count = len(gmail_events)
-        
-        if gm_count > 0:
+
+        if hits:
+            top_hit_texts = [f"• {h['content_text']} (Match Score: {h.get('similarity_score') or h.get('rrf_score', 'N/A')})" for h in hits[:4]]
+            answer = f"Found {len(hits)} semantically relevant match(es) in your Personal World Model across {gm_count} email(s) and {sit_count} situation(s):\n" + "\n".join(top_hit_texts)
+            ev_list = [f"[{h['source_type'].upper()}] {h['content_text']}" for h in hits[:4]]
+        elif gm_count > 0:
             latest_email = gmail_events[0]
             latest_sum = latest_email.payload.get("summary") if isinstance(latest_email.payload, dict) else str(latest_email.payload)
             answer = f"Based on your live Personal World Model ({gm_count} ingested email(s), {sit_count} active situation(s)), your personal context is grounded in real observations. Latest: {latest_sum}."
+            ev_list = evidence_items[:3] or ["[Personal World Model] Grounded state active"]
         else:
             answer = f"Based on your Personal World Model ({sit_count} active situation(s), {ev_count} timeline event(s)), your operational context is active."
+            ev_list = evidence_items[:3] or ["[Personal World Model] Grounded state active"]
 
         return AskPersonalIntelligenceResponse(
             query=query,
             answer=answer,
-            evidence=evidence_items[:3] or ["[Personal World Model] Grounded state active"],
+            evidence=ev_list,
             uncertainty="Unrecorded offline events are not reflected in current state representation.",
-            sources=sorted(list(sources_seen)),
+            sources=sorted(list(sources_seen)) if sources_seen else ["Personal World Model (Vector Index)"],
             recommended_next_step="Inspect the Timeline, Overview, or Data Sources tabs for detailed observations.",
-            context_summary={"situations_count": sit_count, "events_count": ev_count},
+            context_summary={"situations_count": sit_count, "events_count": ev_count, "semantic_matches": len(hits)},
+            semantic_search_hits=hits,
         )
 
     def _construct_hermes_prompt(

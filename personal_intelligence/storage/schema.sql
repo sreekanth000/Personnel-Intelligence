@@ -219,3 +219,16 @@ CREATE TABLE IF NOT EXISTS context_access_audit (
 CREATE INDEX IF NOT EXISTS idx_audit_accessed_at ON context_access_audit(accessed_at);
 CREATE INDEX IF NOT EXISTS idx_audit_accessor ON context_access_audit(accessor);
 CREATE INDEX IF NOT EXISTS idx_audit_situation ON context_access_audit(situation_id);
+
+-- Semantic Vector Embeddings Table for In-Process Vector Search
+CREATE TABLE IF NOT EXISTS vector_embeddings (
+    id TEXT PRIMARY KEY,
+    source_type TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    content_text TEXT NOT NULL,
+    embedding_blob BLOB NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_vec_source ON vector_embeddings(source_type, source_id);

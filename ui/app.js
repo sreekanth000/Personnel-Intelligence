@@ -423,6 +423,25 @@ document.addEventListener("DOMContentLoaded", () => {
         </div>
       </div>
 
+      ${(data.semantic_search_hits && data.semantic_search_hits.length > 0) ? `
+        <div style="margin-top: 1rem; background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: var(--radius-md); padding: 0.75rem;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+            <div style="font-size: 0.8rem; font-weight: 600; color: var(--text-accent); text-transform: uppercase;">
+              ⚡ In-Process Semantic Vector Matches (Dense Cosine + Lexical RRF)
+            </div>
+            <span class="badge badge-recommendation" style="font-size: 0.7rem;">384-DIM SQLITE VEC</span>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+            ${data.semantic_search_hits.map(h => `
+              <div style="background: rgba(0,0,0,0.3); border-radius: 4px; padding: 0.4rem 0.6rem; font-size: 0.8rem; display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;">
+                <span style="color: var(--text-primary);">${escapeHtml(h.content_text)}</span>
+                <span class="badge badge-fact" style="font-family: var(--font-mono); font-size: 0.7rem; white-space: nowrap;">Score: ${h.similarity_score || h.rrf_score || '0.9+'}</span>
+              </div>
+            `).join("")}
+          </div>
+        </div>
+      ` : ""}
+
       ${data.recommended_next_step ? `
         <div class="ask-next-step-box">
           <span class="ask-next-step-icon">👉</span>

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import logging
 import os
 import platform
+import re
 import subprocess
 import threading
 from typing import Optional
@@ -52,8 +53,8 @@ class DesktopNotifier:
         timeout_seconds: int = 7,
     ) -> bool:
         """Executes platform-specific native notification dispatch."""
-        clean_title = title.replace('"', '`"').replace("'", "''").strip()
-        clean_msg = message.replace('"', '`"').replace("'", "''").strip()
+        clean_title = re.sub(r"[\r\n\t]+", " ", str(title)).replace('"', "'").replace("`", "").strip()[:80]
+        clean_msg = re.sub(r"[\r\n\t]+", " ", str(message)).replace('"', "'").replace("`", "").strip()[:140]
 
         # Add priority icon
         prefix = "🚨 " if priority.lower() in ("critical", "high") else "🔔 "

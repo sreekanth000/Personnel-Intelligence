@@ -160,6 +160,21 @@ class DashboardDataService:
             "timestamp": format_iso8601(datetime.now(timezone.utc)),
         }
 
+    def get_vector_search_status(self) -> Dict[str, Any]:
+        """Returns in-process SQLite vector index statistics."""
+        return self.ask_engine.hybrid_search_engine.get_index_stats()
+
+    def execute_hybrid_search(self, query: str, limit: int = 10) -> Dict[str, Any]:
+        """Executes in-process hybrid dense + sparse vector search."""
+        hits = self.ask_engine.hybrid_search_engine.search_hybrid(query=query, limit=limit)
+        return {
+            "status": "success",
+            "query": query,
+            "results": hits,
+            "total_matches": len(hits),
+            "timestamp": format_iso8601(datetime.now(timezone.utc)),
+        }
+
     def _ensure_sample_data_if_empty(self) -> None:
         """Populates rich realistic multi-domain state if SQLite database is brand new."""
         if self.event_store.count() > 0:
@@ -1892,6 +1907,8 @@ class PersonalIntelligenceRequestHandler(SimpleHTTPRequestHandler):
             self._send_json_response(self.data_service.get_gmail_setup_flow())
         elif path in ("/api/pi/sync/status", "/api/sync/status"):
             self._send_json_response(self.data_service.get_sync_status_payload())
+        elif path in ("/api/pi/search/vector_status", "/api/search/vector_status"):
+            self._send_json_response(self.data_service.get_vector_search_status())
         elif path in ("/api/pi/demo/status", "/api/demo/status"):
             self._send_json_response(self.data_service.get_demo_status_payload())
         else:
@@ -1933,6 +1950,10 @@ class PersonalIntelligenceRequestHandler(SimpleHTTPRequestHandler):
             self._send_json_response(self.data_service.trigger_sync_now())
         elif path in ("/api/pi/notifications/test", "/api/notifications/test"):
             self._send_json_response(self.data_service.trigger_test_notification())
+        elif path in ("/api/pi/search/hybrid", "/api/search/hybrid"):
+            q = body.get("query", "")
+            limit = int(body.get("limit", 10))
+            self._send_json_response(self.data_service.execute_hybrid_search(query=q, limit=limit))
         elif path in ("/api/pi/hermes/connect", "/api/hermes/connect"):
             self._send_json_response(self.data_service.connect_hermes())
         elif path in ("/api/pi/hermes/setup_gmail", "/api/hermes/setup_gmail"):
