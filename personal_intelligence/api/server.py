@@ -175,6 +175,28 @@ class DashboardDataService:
             "timestamp": format_iso8601(datetime.now(timezone.utc)),
         }
 
+    def handle_situation_feedback(
+        self,
+        situation_id: str,
+        action: str,
+        snooze_days: int = 2,
+        feedback_notes: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Processes interactive user feedback for a situation via PersonalWorldModel."""
+        res = self.world_model.process_user_feedback(
+            situation_id=situation_id,
+            action=action,
+            snooze_days=snooze_days,
+            feedback_notes=feedback_notes,
+        )
+        if res.get("status") == "success":
+            self.activity_stream.emit(
+                "user_feedback_applied",
+                f"User feedback [{action.upper()}] recorded for situation {situation_id}. PatternLearningEngine and World Model updated.",
+                source="user_feedback_loop",
+            )
+        return res
+
     def _ensure_sample_data_if_empty(self) -> None:
         """Populates rich realistic multi-domain state if SQLite database is brand new."""
         if self.event_store.count() > 0:
@@ -1166,17 +1188,22 @@ class DashboardDataService:
                     sit_summary = f"Informational Update: {clean_title}"
                     action_rec = "Archive or file for background awareness."
 
-                # 3. Create Situational Context Frame
+                # 3. Check for learned user suppression preferences & create Situational Context Frame
+                suppressed_types = self.world_model.get_suppressed_situation_types()
+                is_suppressed = sit_type in suppressed_types
+                init_status = SituationStatus.SUPPRESSED.value if is_suppressed else SituationStatus.OPEN.value
+                init_priority = SituationPriority.LOW.value if is_suppressed else sit_priority
+
                 sit = Situation(
                     id=f"sit-email-{evt.id[-8:]}",
                     type=sit_type,
-                    priority=sit_priority,
-                    status=SituationStatus.OPEN.value,
+                    priority=init_priority,
+                    status=init_status,
                     created_at=now_ts,
                     evidence=[f"event:{evt.id}", prov],
                     context={
                         "summary": sit_summary,
-                        "why_detected": f"Grounded live observation from {sender_str} ({prov}).",
+                        "why_detected": f"Grounded live observation from {sender_str} ({prov})." + (" (Auto-suppressed based on learned user feedback preferences)" if is_suppressed else ""),
                         "sender": sender_str,
                         "subject": clean_title,
                     },
@@ -1954,6 +1981,17 @@ class PersonalIntelligenceRequestHandler(SimpleHTTPRequestHandler):
             q = body.get("query", "")
             limit = int(body.get("limit", 10))
             self._send_json_response(self.data_service.execute_hybrid_search(query=q, limit=limit))
+        elif path in ("/api/pi/situations/feedback", "/api/situations/feedback"):
+            sit_id = body.get("situation_id", "")
+            act = body.get("action", "acknowledge")
+            snooze = int(body.get("snooze_days", 2))
+            notes = body.get("feedback_notes")
+            self._send_json_response(self.data_service.handle_situation_feedback(
+                situation_id=sit_id,
+                action=act,
+                snooze_days=snooze,
+                feedback_notes=notes,
+            ))
         elif path in ("/api/pi/hermes/connect", "/api/hermes/connect"):
             self._send_json_response(self.data_service.connect_hermes())
         elif path in ("/api/pi/hermes/setup_gmail", "/api/hermes/setup_gmail"):

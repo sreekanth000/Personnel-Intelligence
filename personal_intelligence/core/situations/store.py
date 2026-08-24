@@ -255,7 +255,7 @@ class SituationStore:
 
     def update(
         self,
-        situation_id: str,
+        situation_id: Union[str, Situation],
         type: Optional[str] = None,
         status: Optional[str] = None,
         priority: Optional[str] = None,
@@ -272,26 +272,46 @@ class SituationStore:
         Updates an existing situation's fields and advances updated_at.
         Returns the updated Situation, or None if not found.
         """
-        existing = self.get(situation_id)
-        if existing is None:
-            return None
-
-        new_type = type if type is not None else existing.type
-        new_status = status if status is not None else existing.status
-        new_priority = priority if priority is not None else existing.priority
-        new_novelty = novelty if novelty is not None else existing.novelty
-        new_context = context if context is not None else existing.context
-        new_evidence = evidence if evidence is not None else existing.evidence
-        new_goals = related_goals if related_goals is not None else existing.related_goals
-        new_expires_at = expires_at if expires_at is not None else existing.expires_at
-        new_last_eval = last_evaluated_at if last_evaluated_at is not None else existing.last_evaluated_at
-
-        if clear_next_evaluation:
-            new_next_eval = None
-        elif next_evaluation_at is not None:
-            new_next_eval = next_evaluation_at
+        if isinstance(situation_id, Situation):
+            actual_id = situation_id.id
+            existing = self.get(actual_id)
+            if existing is None:
+                return None
+            new_type = type if type is not None else situation_id.type
+            new_status = status if status is not None else situation_id.status
+            new_priority = priority if priority is not None else situation_id.priority
+            new_novelty = novelty if novelty is not None else situation_id.novelty
+            new_context = context if context is not None else situation_id.context
+            new_evidence = evidence if evidence is not None else situation_id.evidence
+            new_goals = related_goals if related_goals is not None else situation_id.related_goals
+            new_expires_at = expires_at if expires_at is not None else situation_id.expires_at
+            new_last_eval = last_evaluated_at if last_evaluated_at is not None else situation_id.last_evaluated_at
+            if clear_next_evaluation:
+                new_next_eval = None
+            elif next_evaluation_at is not None:
+                new_next_eval = next_evaluation_at
+            else:
+                new_next_eval = situation_id.next_evaluation_at
         else:
-            new_next_eval = existing.next_evaluation_at
+            actual_id = situation_id
+            existing = self.get(actual_id)
+            if existing is None:
+                return None
+            new_type = type if type is not None else existing.type
+            new_status = status if status is not None else existing.status
+            new_priority = priority if priority is not None else existing.priority
+            new_novelty = novelty if novelty is not None else existing.novelty
+            new_context = context if context is not None else existing.context
+            new_evidence = evidence if evidence is not None else existing.evidence
+            new_goals = related_goals if related_goals is not None else existing.related_goals
+            new_expires_at = expires_at if expires_at is not None else existing.expires_at
+            new_last_eval = last_evaluated_at if last_evaluated_at is not None else existing.last_evaluated_at
+            if clear_next_evaluation:
+                new_next_eval = None
+            elif next_evaluation_at is not None:
+                new_next_eval = next_evaluation_at
+            else:
+                new_next_eval = existing.next_evaluation_at
 
         now = datetime.now(timezone.utc)
 

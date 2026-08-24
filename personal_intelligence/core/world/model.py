@@ -14,13 +14,16 @@ Uses SQLite. Does NOT use a graph database.
 All state changes pass through validated structured operations with complete provenance.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import logging
 from typing import Any, Dict, List, Optional, Union
 import uuid
 
-from personal_intelligence.core.episodes.models import ReasoningEpisode
+from personal_intelligence.core.episodes.models import (
+    ReasoningEpisode,
+    RecommendationResult,
+)
 from personal_intelligence.core.events.exceptions import EventValidationError
 from personal_intelligence.core.events.models import Event, ensure_timezone_aware, format_iso8601
 from personal_intelligence.core.events.observation import record_observation as core_record_obs
@@ -33,8 +36,17 @@ from personal_intelligence.core.goals.models import (
     GoalPriority,
     GoalStatus,
 )
-from personal_intelligence.core.patterns.models import PatternStatus
-from personal_intelligence.core.situations.models import Situation, SituationPriority
+from personal_intelligence.core.patterns.engine import LearningEngine
+from personal_intelligence.core.patterns.models import (
+    EvidenceObservationType,
+    PatternStatus,
+    PatternType,
+)
+from personal_intelligence.core.situations.models import (
+    Situation,
+    SituationPriority,
+    SituationStatus,
+)
 from personal_intelligence.core.state.engine import StateEngine
 from personal_intelligence.core.state.entity_store import EntityState
 from personal_intelligence.core.timeline.engine import TimelineEngine
@@ -59,8 +71,8 @@ logger = logging.getLogger(__name__)
 
 class PersonalWorldModel:
     """
-    Personal World Model derived deterministically from observations and structured operations.
-    Maintains Current State, Timeline, Goals, Open Situations, Known Patterns, and Emerging Hypotheses.
+    Unified Personal World Model.
+    Maintains all active dimensions derived strictly from verified observations.
     """
 
     def __init__(
@@ -86,6 +98,10 @@ class PersonalWorldModel:
         self.state_engine = StateEngine(
             timeline_engine=self.timeline_engine,
             goal_store=self.goal_store,
+        )
+        self.learning_engine = LearningEngine(
+            pattern_store=self.pattern_store,
+            db_manager=self.db_manager,
         )
 
 
@@ -363,6 +379,180 @@ class PersonalWorldModel:
     def record_reasoning_episode(self, episode: ReasoningEpisode) -> ReasoningEpisode:
         """Records a completed Hermes reasoning episode via EpisodeStore."""
         return self.episode_store.create_episode(episode)
+
+    def process_user_feedback(
+        self,
+        situation_id: str,
+        action: str,  # "acknowledge", "snooze", "dismiss", "not_relevant"
+        snooze_days: int = 2,
+        feedback_notes: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Applies interactive user feedback to a situation:
+        1. Updates Situation status in SituationStore (e.g. RESOLVED, SUPPRESSED with snooze timestamp).
+        2. Records the user's decision into EpisodeStore (user_response_json).
+        3. Records user feedback event into EventStore.
+        4. Notifies LearningEngine to learn user preferences (e.g. suppressing low-priority items or specific categories).
+        5. Updates the Personal World Model's active state and knowledge base.
+        """
+        now = datetime.now(timezone.utc)
+        action_clean = str(action).strip().lower()
+
+        situation = self.situation_store.get(situation_id)
+        if not situation:
+            # Fallback search if id formatting differs
+            all_sits = self.situation_store.list_all(limit=100)
+            for s in all_sits:
+                if s.id == situation_id or situation_id in s.id:
+                    situation = s
+                    break
+
+        if not situation:
+            return {"status": "error", "error": f"Situation '{situation_id}' not found."}
+
+        # 1. Update Situation Status & Next Evaluation
+        if action_clean in ("acknowledge", "acknowledged", "accept", "accepted", "completed"):
+            situation.status = SituationStatus.RESOLVED.value
+            situation.next_evaluation_at = None
+            rec_result = RecommendationResult.ACCEPTED.value
+            note = feedback_notes or "Situation explicitly acknowledged and resolved by user."
+            display_action = "acknowledged"
+        elif action_clean in ("snooze", "snoozed", "defer", "deferred"):
+            snooze_until = now + timedelta(days=snooze_days)
+            situation.status = SituationStatus.SUPPRESSED.value
+            situation.next_evaluation_at = snooze_until
+            rec_result = RecommendationResult.DEFERRED.value
+            note = feedback_notes or f"Situation snoozed for {snooze_days} day(s) until {format_iso8601(snooze_until)}."
+            display_action = f"snoozed_{snooze_days}d"
+        elif action_clean in ("dismiss", "dismissed", "not_relevant", "not relevant", "ignore", "ignored"):
+            situation.status = SituationStatus.SUPPRESSED.value
+            situation.next_evaluation_at = None
+            rec_result = RecommendationResult.DISMISSED.value
+            note = feedback_notes or "Situation dismissed as not relevant by user."
+            display_action = "dismissed_not_relevant"
+        else:
+            situation.status = SituationStatus.RESOLVED.value
+            rec_result = RecommendationResult.ACCEPTED.value
+            note = feedback_notes or f"User action '{action}' recorded."
+            display_action = action_clean
+
+        situation.updated_at = now
+        self.situation_store.update(situation)
+
+        # 2. Record into EpisodeStore (user_response)
+        episodes = self.episode_store.list_by_situation(situation.id, limit=1)
+        if episodes:
+            target_ep = episodes[0]
+            self.episode_store.record_user_response(
+                episode_id=target_ep.id,
+                response=rec_result,
+                feedback_notes=note,
+                metadata={
+                    "action_taken": display_action,
+                    "situation_type": situation.type,
+                    "situation_id": situation.id,
+                    "snooze_days": snooze_days if "snooze" in display_action else 0,
+                    "recorded_at": format_iso8601(now),
+                },
+            )
+            ep_id = target_ep.id
+        else:
+            # Create a tracking episode with the user response
+            new_ep = self.episode_store.create_episode(
+                situation_id=situation.id,
+                observations=situation.evidence,
+                recommendations=[situation.context.get("summary", situation.type)],
+                user_response={
+                    "response": rec_result,
+                    "action_taken": display_action,
+                    "feedback_notes": note,
+                    "metadata": {
+                        "situation_type": situation.type,
+                        "situation_id": situation.id,
+                    },
+                },
+                status="response_recorded",
+            )
+            ep_id = new_ep.id
+
+        # 3. Ingest User Feedback Event to EventStore
+        feedback_event = Event(
+            source="user_interface",
+            event_type="user_feedback_recorded",
+            event_time=now,
+            payload={
+                "situation_id": situation.id,
+                "situation_type": situation.type,
+                "action": display_action,
+                "recommendation_result": rec_result,
+                "notes": note,
+                "episode_id": ep_id,
+            },
+            provenance={
+                "source": "ui_feedback_loop",
+                "recorded_at": format_iso8601(now),
+            },
+        )
+        self.event_store.append(feedback_event)
+
+        # 4. PatternLearningEngine adapts user preferences
+        learned_patterns = []
+        try:
+            # If user dismissed / suppressed item, learn preference to suppress similar items
+            if rec_result == RecommendationResult.DISMISSED.value:
+                pat_desc = f"User frequently suppresses or dismisses situations of type '{situation.type.replace('_', ' ')}'."
+                learned_pat = self.learning_engine._upsert_pattern(
+                    description=pat_desc,
+                    pattern_type=PatternType.INTERACTION_PATTERN,
+                    supporting_episodes=[ep_id],
+                    first_seen=now,
+                    last_seen=now,
+                    metadata={
+                        "dimension": "feedback_suppression",
+                        "suppressed_type": situation.type,
+                        "dismiss_count": 1,
+                    },
+                )
+                learned_patterns.append(learned_pat.to_dict())
+            elif rec_result == RecommendationResult.ACCEPTED.value:
+                pat_desc = f"User actively prioritizes and acknowledges situations of type '{situation.type.replace('_', ' ')}'."
+                learned_pat = self.learning_engine._upsert_pattern(
+                    description=pat_desc,
+                    pattern_type=PatternType.INTERACTION_PATTERN,
+                    supporting_episodes=[ep_id],
+                    first_seen=now,
+                    last_seen=now,
+                    metadata={
+                        "dimension": "feedback_acceptance",
+                        "accepted_type": situation.type,
+                        "accept_count": 1,
+                    },
+                )
+                learned_patterns.append(learned_pat.to_dict())
+        except Exception as ex_learn:
+            logger.debug("Learning engine feedback adaptation note: %s", ex_learn)
+
+        return {
+            "status": "success",
+            "action": display_action,
+            "situation_id": situation.id,
+            "situation_status": situation.status,
+            "episode_id": ep_id,
+            "user_response": rec_result,
+            "learned_patterns": learned_patterns,
+            "message": f"Feedback applied: Situation marked as {situation.status.upper()}.",
+            "timestamp": format_iso8601(now),
+        }
+
+    def get_suppressed_situation_types(self) -> List[str]:
+        """Returns list of situation types the user has learned preferences to suppress."""
+        suppressed = []
+        for p in self.pattern_store.list_patterns():
+            if p.pattern_type == PatternType.INTERACTION_PATTERN.value and "suppresses" in p.description:
+                st = p.metadata.get("suppressed_type")
+                if st and st not in suppressed:
+                    suppressed.append(st)
+        return suppressed
 
     # -------------------------------------------------------------------------
     # World Model State Queries

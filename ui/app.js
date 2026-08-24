@@ -759,11 +759,15 @@ document.addEventListener("DOMContentLoaded", () => {
 
     container.innerHTML = filtered.map(s => {
       const sitId = s.situation_id || s.id;
+      const sitStatus = (s.status || "open").toUpperCase();
       return `
-        <div class="situation-item">
+        <div class="situation-item" id="card-${escapeHtml(sitId)}">
           <div class="situation-header">
-            <span class="situation-title">${escapeHtml(s.title || s.type)}</span>
-            <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <div>
+              <span class="situation-title">${escapeHtml(s.title || s.type)}</span>
+              <span class="badge ${sitStatus === 'RESOLVED' ? 'badge-fact' : (sitStatus === 'SUPPRESSED' ? 'badge-intervention' : 'badge-prediction')}" style="margin-left: 0.5rem; font-size: 0.68rem;">${sitStatus}</span>
+            </div>
+            <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
               <span class="badge badge-prediction">${escapeHtml(s.priority)} PRIORITY</span>
               <button class="btn btn-primary btn-sm" onclick="switchScreen('situation-detail', '${sitId}')">View Epistemic Flow →</button>
               <button class="btn btn-action btn-sm" onclick="triggerSituationInvestigate('${sitId}')">🛠️ Investigate</button>
@@ -782,10 +786,68 @@ document.addEventListener("DOMContentLoaded", () => {
                 .map(e => `<span class="chip-evidence">${escapeHtml(typeof e === 'object' ? (e.ref || JSON.stringify(e)) : String(e))}</span>`).join("") || '<span class="chip-evidence">Ground-truth state feature</span>'}
             </div>
           </div>
+          <div class="situation-feedback-bar" style="margin-top: 0.75rem; padding-top: 0.6rem; border-top: 1px solid rgba(255,255,255,0.08); display: flex; gap: 0.5rem; align-items: center; justify-content: space-between; flex-wrap: wrap;">
+            <div style="font-size: 0.72rem; color: var(--text-muted); font-family: var(--font-mono); text-transform: uppercase;">
+              ⚡ Interactive Feedback Loop (Learns Preferences):
+            </div>
+            <div style="display: flex; gap: 0.4rem; align-items: center;">
+              <button class="btn btn-action btn-sm" style="background: rgba(34, 197, 94, 0.15); border-color: rgba(34, 197, 94, 0.4); color: #4ade80;" onclick="sendSituationFeedback('${sitId}', 'acknowledge', this)" title="Acknowledge and mark resolved">✅ Acknowledged</button>
+              <button class="btn btn-action btn-sm" style="background: rgba(234, 179, 8, 0.15); border-color: rgba(234, 179, 8, 0.4); color: #facc15;" onclick="sendSituationFeedback('${sitId}', 'snooze', this)" title="Snooze alerts for 2 days">⏱️ Snooze 2 Days</button>
+              <button class="btn btn-action btn-sm" style="background: rgba(239, 68, 68, 0.15); border-color: rgba(239, 68, 68, 0.4); color: #f87171;" onclick="sendSituationFeedback('${sitId}', 'dismiss', this)" title="Dismiss and train PatternLearningEngine to auto-suppress similar items">❌ Not Relevant</button>
+            </div>
+          </div>
         </div>
       `;
     }).join("");
   }
+
+  window.sendSituationFeedback = async function(situationId, action, btnElement) {
+    if (!situationId) return;
+    
+    const originalText = btnElement ? btnElement.innerHTML : "";
+    if (btnElement) {
+      btnElement.disabled = true;
+      btnElement.innerHTML = `<span class="spinner" style="width:10px;height:10px;border-width:2px;display:inline-block;vertical-align:middle;margin-right:4px;"></span> Updating...`;
+    }
+
+    try {
+      const res = await fetch("/api/pi/situations/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          situation_id: situationId,
+          action: action,
+          snooze_days: 2,
+          feedback_notes: `User selected '${action}' via Situation Card interactive feedback.`
+        }),
+      });
+      const data = await res.json();
+      if (data.status === "success") {
+        showStatus(`Feedback recorded: Situation marked ${data.situation_status.toUpperCase()}. World Model & PatternLearningEngine updated.`);
+        setTimeout(hideStatus, 4000);
+        
+        fetchOverview();
+        fetchActivityStream();
+        if (currentScreen === "situations") {
+          fetchSituations();
+        } else if (currentScreen === "situation-detail") {
+          fetchSituationDetail(situationId);
+        }
+      } else {
+        alert("Feedback error: " + (data.error || data.message || "Failed to record feedback."));
+        if (btnElement) {
+          btnElement.disabled = false;
+          btnElement.innerHTML = originalText;
+        }
+      }
+    } catch (err) {
+      alert("Network error applying feedback: " + err.message);
+      if (btnElement) {
+        btnElement.disabled = false;
+        btnElement.innerHTML = originalText;
+      }
+    }
+  };
 
   const sitPriorityFilters = document.querySelectorAll("#situation-priority-filters .filter-btn");
   sitPriorityFilters.forEach(btn => {
@@ -853,6 +915,16 @@ document.addEventListener("DOMContentLoaded", () => {
           <span><strong>Novelty Score:</strong> ${(header.novelty_score || 0).toFixed(2)}</span>
           <span><strong>Detected At:</strong> ${escapeHtml(header.detected_at || "")}</span>
           <span><strong>Bounded Investigation:</strong> Real-only read capabilities</span>
+        </div>
+        <div style="margin-top: 0.75rem; padding-top: 0.6rem; border-top: 1px solid rgba(255,255,255,0.08); display: flex; gap: 0.5rem; align-items: center; justify-content: space-between; flex-wrap: wrap;">
+          <span style="font-size: 0.72rem; color: var(--text-muted); font-family: var(--font-mono); text-transform: uppercase;">
+            Interactive Feedback Loop:
+          </span>
+          <div style="display: flex; gap: 0.4rem; align-items: center;">
+            <button class="btn btn-action btn-sm" style="background: rgba(34, 197, 94, 0.15); border-color: rgba(34, 197, 94, 0.4); color: #4ade80;" onclick="sendSituationFeedback('${data.situation_id}', 'acknowledge', this)" title="Acknowledge and mark resolved">✅ Acknowledged</button>
+            <button class="btn btn-action btn-sm" style="background: rgba(234, 179, 8, 0.15); border-color: rgba(234, 179, 8, 0.4); color: #facc15;" onclick="sendSituationFeedback('${data.situation_id}', 'snooze', this)" title="Snooze alerts for 2 days">⏱️ Snooze 2 Days</button>
+            <button class="btn btn-action btn-sm" style="background: rgba(239, 68, 68, 0.15); border-color: rgba(239, 68, 68, 0.4); color: #f87171;" onclick="sendSituationFeedback('${data.situation_id}', 'dismiss', this)" title="Dismiss and train PatternLearningEngine to auto-suppress similar items">❌ Not Relevant</button>
+          </div>
         </div>
       </div>
 

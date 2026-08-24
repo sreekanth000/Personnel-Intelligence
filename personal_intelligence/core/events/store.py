@@ -202,6 +202,10 @@ class EventStore:
         """Returns the most recent events ordered newest to oldest."""
         return self.query_by_time(limit=limit, order="desc")
 
+    def get_events_by_type(self, event_type: str, limit: int = 100) -> List[Event]:
+        """Alias for query_by_type."""
+        return self.query_by_type(event_type=event_type, limit=limit)
+
     def query_by_type(
         self,
         event_type: str,
