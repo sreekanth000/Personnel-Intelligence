@@ -531,6 +531,48 @@
           <div id="gmail-action-container"></div>
         </div>
 
+        <!-- Background Sync & OS Notifications Card -->
+        <div class="glass-card" style="padding: 1.25rem; border-radius: var(--radius-lg);">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+            <div style="display: flex; align-items: center; gap: 0.75rem;">
+              <span style="font-size: 1.5rem;">🔄</span>
+              <div>
+                <h3 style="font-size: 1.1rem; font-weight: 600; margin: 0;">Background Sync & OS Alerts</h3>
+                <span style="font-size: 0.8rem; color: var(--text-muted);">Proactive Situational Triage</span>
+              </div>
+            </div>
+            <span id="sync-status-badge" class="badge badge-recommendation">ACTIVE (30m)</span>
+          </div>
+
+          <div style="background: rgba(0,0,0,0.25); border-radius: var(--radius-md); padding: 0.75rem; margin-bottom: 1rem; font-size: 0.85rem;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 0.35rem;">
+              <span style="color: var(--text-muted);">Interval:</span>
+              <strong id="sync-interval-val">Every 30 minutes</strong>
+            </div>
+            <div style="display: flex; justify-content: space-between; margin-bottom: 0.35rem;">
+              <span style="color: var(--text-muted);">Completed Cycles:</span>
+              <strong id="sync-cycles-val">0</strong>
+            </div>
+            <div style="display: flex; justify-content: space-between; margin-bottom: 0.35rem;">
+              <span style="color: var(--text-muted);">Last Sync:</span>
+              <span id="sync-last-val" style="font-family: monospace; font-size: 0.8rem;">Just now</span>
+            </div>
+            <div style="display: flex; justify-content: space-between;">
+              <span style="color: var(--text-muted);">OS Notifications:</span>
+              <span style="color: #10b981; font-weight: 600;">🔔 Native Windows Toast</span>
+            </div>
+          </div>
+
+          <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+            <button id="btn-sync-trigger-now" class="btn btn-primary btn-sm" style="flex: 1;">
+              <span class="btn-icon">⚡</span> Sync & Triage Now
+            </button>
+            <button id="btn-test-desktop-notify" class="btn btn-secondary btn-sm" style="flex: 1;">
+              <span class="btn-icon">🔔</span> Test Desktop Alert
+            </button>
+          </div>
+        </div>
+
       </div>
 
       <!-- Monitored Capabilities Breakdown Table -->

@@ -32,6 +32,8 @@ from personal_intelligence.core.query import AskPersonalIntelligenceEngine
 from personal_intelligence.core.world import PersonalWorldModel
 from personal_intelligence.demo.scenarios import DemoScenarioRunner
 from personal_intelligence.hermes_bridge.client import HermesClient
+from personal_intelligence.core.notifications.notifier import DesktopNotifier, send_desktop_alert
+from personal_intelligence.core.scheduler.background_sync import BackgroundSyncScheduler
 from personal_intelligence.hermes_bridge.commands import PersonalIntelligenceCommandHandler
 from personal_intelligence.hermes_bridge.connection_manager import HermesConnectionManager
 from personal_intelligence.hermes_bridge.situation_investigation import SituationInvestigator
@@ -49,6 +51,7 @@ class DashboardDataService:
         db_manager: Optional[DatabaseManager] = None,
         is_demo_mode: bool = False,
         auto_seed_sample_data: bool = False,
+        sync_interval_minutes: int = 30,
     ) -> None:
         self.db_manager = db_manager or DatabaseManager()
         self.db_manager.initialize_schema()
@@ -101,8 +104,61 @@ class DashboardDataService:
         self.active_demo_scenario: Optional[int] = None
         self.auto_seed_sample_data = auto_seed_sample_data
 
+        # Background Sync & OS Notification Scheduler (Configurable Interval)
+        self.bg_scheduler = BackgroundSyncScheduler(
+            sync_interval_minutes=sync_interval_minutes,
+            sync_callback=self._perform_silent_triage_sync,
+            auto_start=True,
+        )
+
         if self.auto_seed_sample_data or is_demo_mode or (db_manager and db_manager.db_path and ("ui_test" in db_manager.db_path or "test_" in db_manager.db_path)):
             self._ensure_sample_data_if_empty()
+
+    def _perform_silent_triage_sync(self) -> Dict[str, Any]:
+        """Performs silent background inbox triage and returns high-priority situations."""
+        try:
+            self.execute_gmail_investigation(query="is:inbox", max_results=25, days=14)
+        except Exception as e:
+            logger.debug("Background silent Gmail query note: %s", e)
+
+        active_sits = self.current_situation_store.list_active()
+        high_pri = [s.to_dict() for s in active_sits if getattr(s, "priority", "") in ("critical", "high")]
+        return {
+            "high_priority_situations": high_pri,
+            "total_active_situations": len(active_sits),
+        }
+
+    def get_sync_status_payload(self) -> Dict[str, Any]:
+        """Returns background sync scheduler status."""
+        return self.bg_scheduler.get_status()
+
+    def trigger_sync_now(self) -> Dict[str, Any]:
+        """Triggers manual background sync cycle immediately."""
+        res = self.bg_scheduler.trigger_now()
+        self.activity_stream.emit(
+            "sync_cycle_completed",
+            f"Manual background sync completed: {res.get('high_priority_detected', 0)} high-priority item(s) assessed.",
+            source="background_sync_scheduler",
+        )
+        return res
+
+    def trigger_test_notification(self) -> Dict[str, Any]:
+        """Dispatches a test native desktop alert."""
+        send_desktop_alert(
+            title="Personal Intelligence Active",
+            message="Background sync & native OS notifications are active and operating properly!",
+            priority="high",
+        )
+        self.activity_stream.emit(
+            "notification_dispatched",
+            "Test desktop notification sent via Native OS Notifier.",
+            source="desktop_notifier",
+        )
+        return {
+            "status": "success",
+            "message": "Test desktop notification dispatched to OS.",
+            "timestamp": format_iso8601(datetime.now(timezone.utc)),
+        }
 
     def _ensure_sample_data_if_empty(self) -> None:
         """Populates rich realistic multi-domain state if SQLite database is brand new."""
@@ -1834,6 +1890,8 @@ class PersonalIntelligenceRequestHandler(SimpleHTTPRequestHandler):
             self._send_json_response(self.data_service.get_hermes_status_payload())
         elif path in ("/api/pi/hermes/setup_gmail", "/api/hermes/setup_gmail", "/api/pi/hermes/gmail_flow", "/api/hermes/gmail_flow"):
             self._send_json_response(self.data_service.get_gmail_setup_flow())
+        elif path in ("/api/pi/sync/status", "/api/sync/status"):
+            self._send_json_response(self.data_service.get_sync_status_payload())
         elif path in ("/api/pi/demo/status", "/api/demo/status"):
             self._send_json_response(self.data_service.get_demo_status_payload())
         else:
@@ -1871,6 +1929,10 @@ class PersonalIntelligenceRequestHandler(SimpleHTTPRequestHandler):
             self._send_json_response(self.data_service.execute_why(situation_id=sit_id))
         elif path in ("/api/pi/actions/test_sources", "/api/actions/test_sources"):
             self._send_json_response(self.data_service.execute_test_sources())
+        elif path in ("/api/pi/sync/trigger", "/api/sync/trigger"):
+            self._send_json_response(self.data_service.trigger_sync_now())
+        elif path in ("/api/pi/notifications/test", "/api/notifications/test"):
+            self._send_json_response(self.data_service.trigger_test_notification())
         elif path in ("/api/pi/hermes/connect", "/api/hermes/connect"):
             self._send_json_response(self.data_service.connect_hermes())
         elif path in ("/api/pi/hermes/setup_gmail", "/api/hermes/setup_gmail"):
@@ -1917,6 +1979,7 @@ def create_dashboard_server(
     ui_dir: Optional[str] = None,
     is_demo_mode: bool = False,
     auto_seed_sample_data: bool = False,
+    sync_interval_minutes: int = 30,
 ) -> HTTPServer:
     """
     Constructs and configures the HTTP dashboard server.
@@ -1929,6 +1992,7 @@ def create_dashboard_server(
         db_manager=db_manager,
         is_demo_mode=is_demo_mode,
         auto_seed_sample_data=auto_seed_sample_data,
+        sync_interval_minutes=sync_interval_minutes,
     )
 
     class CustomHandler(PersonalIntelligenceRequestHandler):

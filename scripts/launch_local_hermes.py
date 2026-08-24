@@ -573,6 +573,7 @@ def launch(
     google_client_id: Optional[str] = None,
     google_client_secret: Optional[str] = None,
     oauth_login: bool = False,
+    sync_interval: int = 30,
 ) -> None:
     print("=" * 75)
     print("  [+] LOCAL HERMES RUNTIME HOST & PERSONAL INTELLIGENCE BRIDGE")
@@ -580,6 +581,8 @@ def launch(
     print(f"  * Hermes Model:      {model}")
     print(f"  * LLM Endpoint:      {llm_url}")
     print(f"  * Gmail Auth State:  {gmail_auth}")
+    print(f"  * Background Sync:   Every {sync_interval} min(s) [Active]")
+    print(f"  * OS Notifications:  High-Priority Toast Alerts [Active]")
 
     # 1. Initialize Google OAuth Handler if configured
     oauth_handler = HermesGoogleOAuthHandler(
@@ -619,9 +622,10 @@ def launch(
     print(f"  [OK] Hermes Connection Status: CONNECTED (Stage: {'GMAIL_AUTHENTICATED' if gmail_auth == 'authenticated' else 'CAPABILITIES_DISCOVERED'})")
     print("=" * 75)
 
-    # 5. Launch Dashboard Server
-    server = create_dashboard_server(port=port, host=host)
+    # 5. Launch Dashboard Server with Background Sync & Notifications
+    server = create_dashboard_server(port=port, host=host, sync_interval_minutes=sync_interval)
     print(f"  * Web UI Dashboard:  http://{host}:{port}/")
+    print(f"  * Background Sync:   http://{host}:{port}/api/pi/sync/status")
     print(f"  * Data Sources API:  http://{host}:{port}/api/pi/sources/status")
     print(f"  * Overview API:      http://{host}:{port}/api/pi/overview")
     print("=" * 75)
@@ -649,6 +653,7 @@ if __name__ == "__main__":
     parser.add_argument("--google-client-id", type=str, default=None, help="Google Cloud OAuth Client ID")
     parser.add_argument("--google-client-secret", type=str, default=None, help="Google Cloud OAuth Client Secret")
     parser.add_argument("--oauth-login", action="store_true", help="Launch interactive browser OAuth consent flow on startup")
+    parser.add_argument("--sync-interval", type=int, default=30, help="Background silent sync interval in minutes (default: 30)")
 
     args = parser.parse_args()
     launch(
@@ -663,4 +668,5 @@ if __name__ == "__main__":
         google_client_id=args.google_client_id,
         google_client_secret=args.google_client_secret,
         oauth_login=args.oauth_login,
+        sync_interval=args.sync_interval,
     )

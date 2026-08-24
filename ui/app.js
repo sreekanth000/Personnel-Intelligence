@@ -122,7 +122,10 @@ document.addEventListener("DOMContentLoaded", () => {
     else if (screenId === "patterns") fetchPatterns();
     else if (screenId === "timeline") fetchTimeline();
     else if (screenId === "episodes") fetchEpisodes();
-    else if (screenId === "sources") fetchDataSources();
+    else if (screenId === "sources") {
+      fetchDataSources();
+      fetchSyncStatus();
+    }
   }
 
   navTabs.forEach(tab => {
@@ -1860,9 +1863,66 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  // Background Sync & Desktop Notifications
+  async function fetchSyncStatus() {
+    try {
+      const res = await fetch("/api/pi/sync/status");
+      const d = await res.json();
+      const badge = document.getElementById("sync-status-badge");
+      const intervalVal = document.getElementById("sync-interval-val");
+      const cyclesVal = document.getElementById("sync-cycles-val");
+      const lastVal = document.getElementById("sync-last-val");
+
+      if (badge) {
+        badge.textContent = d.is_running ? `ACTIVE (${d.sync_interval_minutes}m)` : "PAUSED";
+        badge.className = `badge ${d.is_running ? 'badge-recommendation' : 'badge-intervention'}`;
+      }
+      if (intervalVal) intervalVal.textContent = `Every ${d.sync_interval_minutes} minutes`;
+      if (cyclesVal) cyclesVal.textContent = String(d.sync_count || 0);
+      if (lastVal) {
+        lastVal.textContent = d.last_sync_at ? new Date(d.last_sync_at).toLocaleTimeString() : "Pending";
+      }
+    } catch (e) {
+      console.warn("Failed to fetch sync status:", e);
+    }
+  }
+
   // Data sources screen button wiring
   document.getElementById("btn-sources-refresh")?.addEventListener("click", () => {
     fetchDataSources();
+    fetchSyncStatus();
+  });
+
+  document.getElementById("btn-sync-trigger-now")?.addEventListener("click", async () => {
+    showStatus("Triggering background situational sync & triage...");
+    try {
+      const res = await fetch("/api/pi/sync/trigger", { method: "POST" });
+      const data = await res.json();
+      hideStatus();
+      fetchSyncStatus();
+      fetchOverview();
+      fetchSituations();
+      fetchEpisodes();
+      fetchActivityStream();
+      alert(`Background Sync Cycle #${data.cycle_number} Completed!\nHigh-Priority Items Assessed: ${data.high_priority_detected || 0}\nNotifications Dispatched: ${data.notifications_dispatched || 0}`);
+    } catch (err) {
+      hideStatus();
+      alert("Error triggering sync: " + err.message);
+    }
+  });
+
+  document.getElementById("btn-test-desktop-notify")?.addEventListener("click", async () => {
+    showStatus("Sending test native OS desktop notification...");
+    try {
+      const res = await fetch("/api/pi/notifications/test", { method: "POST" });
+      const data = await res.json();
+      hideStatus();
+      fetchActivityStream();
+      alert("✅ Desktop alert sent! Check your Windows notification center / desktop corner.");
+    } catch (err) {
+      hideStatus();
+      alert("Error sending desktop alert: " + err.message);
+    }
   });
 
   const handleConnectHermes = async () => {
@@ -1873,6 +1933,7 @@ document.addEventListener("DOMContentLoaded", () => {
       hideStatus();
       if (data.status === "success") {
         fetchDataSources();
+        fetchSyncStatus();
         fetchActivityStream();
       }
     } catch (e) {
