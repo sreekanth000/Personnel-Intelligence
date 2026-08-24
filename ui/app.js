@@ -2016,6 +2016,116 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  // Calendar Sync Handler
+  document.getElementById("btn-sync-calendar")?.addEventListener("click", async () => {
+    showStatus("Syncing Google Calendar & schedule capacity...");
+    try {
+      const res = await fetch("/api/pi/calendar/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ time_range_days: 7 }),
+      });
+      const data = await res.json();
+      hideStatus();
+      if (data.status === "success") {
+        const countVal = document.getElementById("calendar-events-count-val");
+        const busyVal = document.getElementById("calendar-busy-hours-val");
+        if (countVal) countVal.textContent = `${data.events_synced} scheduled block(s)`;
+        if (busyVal) busyVal.textContent = `${data.busy_hours_total} hours occupied`;
+        fetchActivityStream();
+        fetchOverview();
+        fetchSituations();
+        alert(`✅ Google Calendar Synced!\n${data.events_synced} events ingested into World Model & Vector Engine.\nOccupied Schedule Load: ${data.busy_hours_total}h.\nCross-Domain Conflicts: ${data.cross_domain_conflicts.length}`);
+      } else {
+        alert("Calendar sync error: " + (data.error || "Failed to sync calendar"));
+      }
+    } catch (err) {
+      hideStatus();
+      alert("Error syncing calendar: " + err.message);
+    }
+  });
+
+  // Voice Note Ingestion Handler
+  document.getElementById("btn-ingest-voice-note")?.addEventListener("click", async () => {
+    const textInput = document.getElementById("voice-note-text-input");
+    const titleInput = document.getElementById("voice-note-title-input");
+    const text = textInput ? textInput.value.trim() : "";
+    const title = titleInput ? titleInput.value.trim() : "";
+
+    if (!text) {
+      alert("Please enter a meeting transcript, spoken memo, or action items text first.");
+      return;
+    }
+
+    showStatus("Parsing voice note, extracting action items, and indexing semantic vectors...");
+    try {
+      const res = await fetch("/api/pi/voice_notes/ingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: text, title: title || undefined }),
+      });
+      const data = await res.json();
+      hideStatus();
+      if (data.status === "success") {
+        if (textInput) textInput.value = "";
+        if (titleInput) titleInput.value = "";
+        fetchActivityStream();
+        fetchOverview();
+        fetchSituations();
+        const vn = data.voice_note || {};
+        alert(`🎙️ Voice Note Ingested & Vector Indexed!\nTitle: "${vn.title}"\nAction Items Extracted: ${data.action_items_derived}\nCross-Domain Conflicts Checked: ${data.cross_domain_conflicts.length}`);
+      } else {
+        alert("Voice note ingestion error: " + (data.error || "Failed to ingest voice note"));
+      }
+    } catch (err) {
+      hideStatus();
+      alert("Error ingesting voice note: " + err.message);
+    }
+  });
+
+  // Multi-Source Cross-Domain Fusion Analysis Handler
+  document.getElementById("btn-run-fusion-analysis")?.addEventListener("click", async () => {
+    showStatus("Correlating Gmail + Calendar + Health/Sleep + Voice Notes...");
+    try {
+      const res = await fetch("/api/pi/fusion/analyze", { method: "POST" });
+      const data = await res.json();
+      hideStatus();
+      const container = document.getElementById("fusion-conflicts-container");
+      if (container) {
+        const conflicts = data.active_conflicts || [];
+        if (conflicts.length === 0) {
+          container.innerHTML = `
+            <div style="color: #34d399; font-weight: 500;">
+              ✅ Zero cross-domain conflicts detected! Email commitments, calendar blocks, and recovery metrics are in optimal alignment.
+            </div>
+          `;
+        } else {
+          container.innerHTML = `
+            <div style="font-weight: 600; color: #f87171; margin-bottom: 0.5rem;">
+              ⚠️ Detected ${conflicts.length} Cross-Domain Collision(s):
+            </div>
+            ${conflicts.map(c => `
+              <div style="background: rgba(239, 68, 68, 0.1); border-left: 3px solid #ef4444; padding: 0.6rem 0.75rem; border-radius: 4px; margin-bottom: 0.5rem;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.25rem;">
+                  <strong style="color: #fff; font-size: 0.88rem;">${escapeHtml(c.title)}</strong>
+                  <span class="badge badge-prediction">${escapeHtml(c.severity.toUpperCase())}</span>
+                </div>
+                <div style="color: var(--text-secondary); font-size: 0.82rem; margin-bottom: 0.4rem;">${escapeHtml(c.description)}</div>
+                <div style="font-size: 0.78rem; color: #93c5fd;">💡 <strong>Recommended Action:</strong> ${escapeHtml(c.recommended_action)}</div>
+              </div>
+            `).join("")}
+          `;
+        }
+      }
+      fetchOverview();
+      fetchSituations();
+      fetchActivityStream();
+    } catch (err) {
+      hideStatus();
+      alert("Error analyzing fusion: " + err.message);
+    }
+  });
+
   const handleConnectHermes = async () => {
     showStatus("Connecting to Hermes Host Runtime...");
     try {

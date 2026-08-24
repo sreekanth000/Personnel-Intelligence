@@ -29,6 +29,7 @@ from personal_intelligence.core.activity.stream import ActivityStream
 from personal_intelligence.core.context import ContextBuilder
 from personal_intelligence.core.events.models import Event, format_iso8601
 from personal_intelligence.core.events.store import EventStore
+from personal_intelligence.core.fusion.multi_source_engine import MultiSourceFusionEngine
 from personal_intelligence.core.goals.models import Goal
 from personal_intelligence.core.goals.store import GoalStore
 from personal_intelligence.core.patterns.models import Pattern
@@ -153,6 +154,13 @@ class AskPersonalIntelligenceEngine:
         )
         self.activity_stream = activity_stream or ActivityStream.get_instance()
         self.hybrid_search_engine = HybridSearchEngine(db_manager=self.db_manager)
+        self.fusion_engine = MultiSourceFusionEngine(
+            db_manager=self.db_manager,
+            event_store=self.event_store,
+            situation_store=self.situation_store,
+            timeline_engine=self.timeline_engine,
+            state_engine=self.state_engine,
+        )
 
     def ask(self, query: str, situation_id: Optional[str] = None) -> AskPersonalIntelligenceResponse:
         """
@@ -565,26 +573,42 @@ class AskPersonalIntelligenceEngine:
                 context_summary={"situations_count": len(situations)},
             )
 
-        # Case 8: "Do I have conflicting commitments?" / "Conflicts"
-        if any(k in q_lower for k in ("conflict", "competing", "overlap", "double booked")):
-            conflict_sits = [s for s in situations if "conflict" in s.type or "strain" in s.type or "timing" in s.type]
-            if conflict_sits:
-                top_cf = conflict_sits[0]
-                ctx_sum = top_cf.context.get("summary", "") if isinstance(top_cf.context, dict) else str(top_cf.context)
-                answer = f"Yes, a conflict exists regarding '{top_cf.type.replace('_', ' ').title()}': {ctx_sum}"
-                rec_step = "Reschedule one of the conflicting blocks or delegate the conflicting deliverable."
+        # Case 8: "Do I have conflicting commitments?" / "Conflicts" / "Schedule"
+        if any(k in q_lower for k in ("conflict", "competing", "overlap", "double booked", "calendar", "schedule", "capacity", "strain")):
+            fusion_conflicts = []
+            try:
+                fusion_conflicts = self.fusion_engine.analyze_cross_domain_correlations()
+            except Exception as ex_f:
+                logger.debug("Fusion conflict check note: %s", ex_f)
+
+            if fusion_conflicts:
+                top_fc = fusion_conflicts[0]
+                answer = f"Multi-source cross-domain correlation detected: {top_fc.title}. {top_fc.description}"
+                ev_items = top_fc.supporting_evidence
+                sources_seen.update(["Google Calendar", "Gmail", "Health & Sleep"])
+                rec_step = top_fc.recommended_action
             else:
-                answer = "No direct calendar overlaps or multi-goal scheduling conflicts identified."
-                rec_step = "Keep dedicated buffers between upcoming transition windows."
+                conflict_sits = [s for s in situations if "conflict" in s.type or "strain" in s.type or "timing" in s.type]
+                if conflict_sits:
+                    top_cf = conflict_sits[0]
+                    ctx_sum = top_cf.context.get("summary", "") if isinstance(top_cf.context, dict) else str(top_cf.context)
+                    answer = f"Yes, a conflict exists regarding '{top_cf.type.replace('_', ' ').title()}': {ctx_sum}"
+                    ev_items = evidence_items[:4]
+                    rec_step = "Reschedule one of the conflicting blocks or delegate the conflicting deliverable."
+                else:
+                    answer = "No direct calendar overlaps, cross-domain fatigue collisions, or multi-goal scheduling conflicts identified."
+                    ev_items = evidence_items[:3] or ["[Personal World Model] Calendar & commitment streams aligned."]
+                    rec_step = "Keep dedicated focus buffers between upcoming transition windows."
 
             return AskPersonalIntelligenceResponse(
                 query=query,
                 answer=answer,
-                evidence=evidence_items[:4],
-                uncertainty="Transit delays or incoming messages could impact transition buffers.",
+                evidence=ev_items,
+                uncertainty="Transit delays, incoming messages, or meeting duration adjustments may impact transition buffers.",
                 sources=sorted(list(sources_seen)),
                 recommended_next_step=rec_step,
-                context_summary={"conflicts_count": len(conflict_sits)},
+                context_summary={"conflicts_count": len(fusion_conflicts) if fusion_conflicts else len(situations)},
+                semantic_search_hits=hits,
             )
 
         # General Grounded Answer (Dynamic from real data & In-Process Semantic Search)

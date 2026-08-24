@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlparse
 
 from personal_intelligence.core.episodes.models import RecommendationResult
 from personal_intelligence.core.episodes.store import EpisodeStore
-from personal_intelligence.core.events.models import Event, format_iso8601
+from personal_intelligence.core.events.models import Event, ensure_timezone_aware, format_iso8601
 from personal_intelligence.core.events.store import EventStore
 from personal_intelligence.core.goals.models import GoalPriority, GoalStatus
 from personal_intelligence.core.goals.store import GoalStore
@@ -32,11 +32,17 @@ from personal_intelligence.core.query import AskPersonalIntelligenceEngine
 from personal_intelligence.core.world import PersonalWorldModel
 from personal_intelligence.demo.scenarios import DemoScenarioRunner
 from personal_intelligence.hermes_bridge.client import HermesClient
+from personal_intelligence.core.fusion.multi_source_engine import MultiSourceFusionEngine
 from personal_intelligence.core.notifications.notifier import DesktopNotifier, send_desktop_alert
 from personal_intelligence.core.scheduler.background_sync import BackgroundSyncScheduler
+from personal_intelligence.hermes_bridge.calendar_adapter import (
+    CalendarCapabilityRequest,
+    GoogleCalendarCapabilityAdapter,
+)
 from personal_intelligence.hermes_bridge.commands import PersonalIntelligenceCommandHandler
 from personal_intelligence.hermes_bridge.connection_manager import HermesConnectionManager
 from personal_intelligence.hermes_bridge.situation_investigation import SituationInvestigator
+from personal_intelligence.hermes_bridge.voice_notes_adapter import VoiceNotesAdapter
 from personal_intelligence.storage.db import DatabaseManager
 
 
@@ -103,6 +109,17 @@ class DashboardDataService:
         self.is_demo_mode = is_demo_mode
         self.active_demo_scenario: Optional[int] = None
         self.auto_seed_sample_data = auto_seed_sample_data
+
+        # Multi-Source Ingestion & Fusion Engines
+        self.calendar_adapter = GoogleCalendarCapabilityAdapter(bridge=self.hermes_client)
+        self.voice_notes_adapter = VoiceNotesAdapter()
+        self.fusion_engine = MultiSourceFusionEngine(
+            db_manager=self.db_manager,
+            event_store=self.event_store,
+            situation_store=self.situation_store,
+            timeline_engine=self.timeline_engine,
+            state_engine=self.state_engine,
+        )
 
         # Background Sync & OS Notification Scheduler (Configurable Interval)
         self.bg_scheduler = BackgroundSyncScheduler(
@@ -196,6 +213,124 @@ class DashboardDataService:
                 source="user_feedback_loop",
             )
         return res
+
+    def execute_calendar_sync(self, time_range_days: int = 7) -> Dict[str, Any]:
+        """Syncs Google Calendar observations into EventStore, World Model, and Vector Index."""
+        res = self.calendar_adapter.execute_query(CalendarCapabilityRequest(time_range_days=time_range_days))
+        ingested = 0
+        now_ts = datetime.now(timezone.utc)
+
+        for ev in res.events:
+            event_obj = Event(
+                id=f"evt-{ev.id}",
+                source="calendar",
+                event_type="calendar_event",
+                event_time=ensure_timezone_aware(ev.start_time, "start_time"),
+                payload=ev.to_dict(),
+                provenance={
+                    "tool": "calendar_sync",
+                    "provenance_chain": [ev.provenance],
+                    "recorded_at": format_iso8601(now_ts),
+                },
+            )
+            try:
+                self.event_store.append(event_obj)
+                ingested += 1
+                self.ask_engine.hybrid_search_engine.index_document(
+                    source_type="calendar",
+                    source_id=ev.id,
+                    content_text=f"[CALENDAR] {ev.summary} (At: {ev.start_time} - {ev.end_time}, Duration: {ev.duration_minutes}m, Location: {ev.location or 'Online'})",
+                    metadata=ev.to_dict(),
+                )
+            except Exception as ex_cal:
+                logger.debug("Calendar event ingestion note: %s", ex_cal)
+
+        # Trigger Cross-Domain Fusion Correlation
+        fusion_conflicts = self.fusion_engine.analyze_cross_domain_correlations()
+
+        self.activity_stream.emit(
+            "calendar_synced",
+            f"Synced {len(res.events)} Google Calendar event(s). Occupied Load: {res.busy_hours_total}h. {len(fusion_conflicts)} cross-domain correlation(s) evaluated.",
+            source="calendar_adapter",
+        )
+
+        return {
+            "status": "success",
+            "events_synced": len(res.events),
+            "busy_hours_total": res.busy_hours_total,
+            "events": [e.to_dict() for e in res.events],
+            "free_blocks": res.free_blocks,
+            "cross_domain_conflicts": [c.to_dict() for c in fusion_conflicts],
+            "timestamp": format_iso8601(now_ts),
+        }
+
+    def execute_voice_note_ingest(self, text: str, title: Optional[str] = None) -> Dict[str, Any]:
+        """Parses and ingests a voice recording transcript or meeting summary."""
+        note_item = self.voice_notes_adapter.parse_note_content(text=text, title=title)
+        self.voice_notes_adapter.save_note_file(note_item)
+        now_ts = datetime.now(timezone.utc)
+
+        # Store in event log
+        event_obj = Event(
+            id=f"evt-{note_item.id}",
+            source="voice_notes",
+            event_type="meeting_transcript",
+            event_time=now_ts,
+            payload=note_item.to_dict(),
+            provenance={
+                "tool": "voice_notes_ingest",
+                "provenance_chain": [note_item.provenance],
+                "recorded_at": format_iso8601(now_ts),
+            },
+        )
+        self.event_store.append(event_obj)
+
+        # Index in vector search
+        self.ask_engine.hybrid_search_engine.index_document(
+            source_type="voice_notes",
+            source_id=note_item.id,
+            content_text=f"[VOICE NOTES] {note_item.title}: {note_item.summary}. Action Items: {', '.join(note_item.action_items) if note_item.action_items else 'None'}",
+            metadata=note_item.to_dict(),
+        )
+
+        # Derive commitments for action items in World Model
+        for act in note_item.action_items:
+            try:
+                self.world_model.record_commitment(
+                    description=f"Action item: {act}",
+                    metadata={"source": "voice_notes", "origin": note_item.title},
+                )
+            except Exception:
+                pass
+
+        # Trigger Cross-Domain Fusion
+        fusion_conflicts = self.fusion_engine.analyze_cross_domain_correlations()
+        self.fusion_engine.synthesize_fusion_situations()
+
+        self.activity_stream.emit(
+            "voice_note_ingested",
+            f"Ingested Voice Note '{note_item.title}' with {len(note_item.action_items)} action item(s) and full vector indexing.",
+            source="voice_notes_adapter",
+        )
+
+        return {
+            "status": "success",
+            "voice_note": note_item.to_dict(),
+            "action_items_derived": len(note_item.action_items),
+            "cross_domain_conflicts": [c.to_dict() for c in fusion_conflicts],
+            "timestamp": format_iso8601(now_ts),
+        }
+
+    def get_fusion_status(self) -> Dict[str, Any]:
+        """Returns Multi-Source Fusion cross-domain correlation status."""
+        conflicts = self.fusion_engine.analyze_cross_domain_correlations()
+        return {
+            "status": "success",
+            "active_conflicts": [c.to_dict() for c in conflicts],
+            "total_conflicts": len(conflicts),
+            "streams_connected": ["gmail", "google_calendar", "health_sleep", "voice_notes"],
+            "timestamp": format_iso8601(datetime.now(timezone.utc)),
+        }
 
     def _ensure_sample_data_if_empty(self) -> None:
         """Populates rich realistic multi-domain state if SQLite database is brand new."""
@@ -1936,6 +2071,8 @@ class PersonalIntelligenceRequestHandler(SimpleHTTPRequestHandler):
             self._send_json_response(self.data_service.get_sync_status_payload())
         elif path in ("/api/pi/search/vector_status", "/api/search/vector_status"):
             self._send_json_response(self.data_service.get_vector_search_status())
+        elif path in ("/api/pi/fusion/status", "/api/fusion/status"):
+            self._send_json_response(self.data_service.get_fusion_status())
         elif path in ("/api/pi/demo/status", "/api/demo/status"):
             self._send_json_response(self.data_service.get_demo_status_payload())
         else:
@@ -1992,6 +2129,16 @@ class PersonalIntelligenceRequestHandler(SimpleHTTPRequestHandler):
                 snooze_days=snooze,
                 feedback_notes=notes,
             ))
+        elif path in ("/api/pi/calendar/sync", "/api/calendar/sync", "/api/pi/calendar/ingest", "/api/calendar/ingest"):
+            days = int(body.get("time_range_days", 7))
+            self._send_json_response(self.data_service.execute_calendar_sync(time_range_days=days))
+        elif path in ("/api/pi/voice_notes/ingest", "/api/voice_notes/ingest", "/api/pi/voice_notes/save", "/api/voice_notes/save"):
+            txt = body.get("text", "") or body.get("transcript", "") or body.get("content", "")
+            title = body.get("title")
+            self._send_json_response(self.data_service.execute_voice_note_ingest(text=txt, title=title))
+        elif path in ("/api/pi/fusion/analyze", "/api/fusion/analyze"):
+            self.data_service.fusion_engine.synthesize_fusion_situations()
+            self._send_json_response(self.data_service.get_fusion_status())
         elif path in ("/api/pi/hermes/connect", "/api/hermes/connect"):
             self._send_json_response(self.data_service.connect_hermes())
         elif path in ("/api/pi/hermes/setup_gmail", "/api/hermes/setup_gmail"):

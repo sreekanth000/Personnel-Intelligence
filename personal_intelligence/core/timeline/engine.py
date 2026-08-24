@@ -89,6 +89,23 @@ class TimelineEngine:
         finally:
             conn.close()
 
+    def get_range(
+        self,
+        start_time: Optional[Union[datetime, str]] = None,
+        end_time: Optional[Union[datetime, str]] = None,
+        subject_id: Optional[str] = None,
+        event_types: Optional[List[str]] = None,
+        limit: Optional[int] = None,
+    ) -> Timeline:
+        """Alias for get_time_range."""
+        return self.get_time_range(
+            start_time=start_time,
+            end_time=end_time,
+            subject_id=subject_id,
+            event_types=event_types,
+            limit=limit,
+        )
+
     def get_last_n_minutes(
         self,
         minutes: int,

@@ -573,6 +573,81 @@
           </div>
         </div>
 
+        <!-- Google Calendar Multi-Source Card -->
+        <div class="glass-card" style="padding: 1.25rem; border-radius: var(--radius-lg);">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+            <div style="display: flex; align-items: center; gap: 0.75rem;">
+              <span style="font-size: 1.5rem;">📅</span>
+              <div>
+                <h3 style="font-size: 1.1rem; font-weight: 600; margin: 0;">Google Calendar</h3>
+                <span style="font-size: 0.8rem; color: var(--text-muted);">Schedule & Cognitive Capacity</span>
+              </div>
+            </div>
+            <span id="calendar-status-badge" class="badge badge-fact">CONNECTED</span>
+          </div>
+
+          <div style="background: rgba(0,0,0,0.25); border-radius: var(--radius-md); padding: 0.75rem; margin-bottom: 1rem; font-size: 0.85rem;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 0.35rem;">
+              <span style="color: var(--text-muted);">Ingestion Mode:</span>
+              <strong style="color: var(--accent-blue);">Bounded Read-Only</strong>
+            </div>
+            <div style="display: flex; justify-content: space-between; margin-bottom: 0.35rem;">
+              <span style="color: var(--text-muted);">Synced Events:</span>
+              <strong id="calendar-events-count-val">3 scheduled blocks</strong>
+            </div>
+            <div style="display: flex; justify-content: space-between;">
+              <span style="color: var(--text-muted);">Occupied Load:</span>
+              <span id="calendar-busy-hours-val" style="color: #f59e0b; font-weight: 600;">5.5 hours busy</span>
+            </div>
+          </div>
+
+          <button id="btn-sync-calendar" class="btn btn-primary" style="width: 100%;">
+            <span class="btn-icon">📅</span> Sync Calendar & Schedule Blocks
+          </button>
+        </div>
+
+        <!-- Local Voice Notes & Meeting Summaries Card -->
+        <div class="glass-card" style="padding: 1.25rem; border-radius: var(--radius-lg);">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+            <div style="display: flex; align-items: center; gap: 0.75rem;">
+              <span style="font-size: 1.5rem;">🎙️</span>
+              <div>
+                <h3 style="font-size: 1.1rem; font-weight: 600; margin: 0;">Voice Notes & Summaries</h3>
+                <span style="font-size: 0.8rem; color: var(--text-muted);">Verbal Commitments & Memos</span>
+              </div>
+            </div>
+            <span class="badge badge-fact">LOCAL DISK & BLOB</span>
+          </div>
+
+          <div style="margin-bottom: 0.75rem;">
+            <input type="text" id="voice-note-title-input" placeholder="Note Title (e.g. Architecture Roadmap Sync)" style="width: 100%; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); border-radius: var(--radius-sm); padding: 0.4rem 0.6rem; color: #fff; font-size: 0.85rem; margin-bottom: 0.5rem;" />
+            <textarea id="voice-note-text-input" rows="3" placeholder="Paste voice transcript or meeting summary (e.g. Todo: deliver final performance report by Friday)..." style="width: 100%; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); border-radius: var(--radius-sm); padding: 0.4rem 0.6rem; color: #fff; font-size: 0.82rem; resize: vertical;"></textarea>
+          </div>
+
+          <button id="btn-ingest-voice-note" class="btn btn-action" style="width: 100%; background: rgba(168, 85, 247, 0.2); border-color: rgba(168, 85, 247, 0.5); color: #d8b4fe;">
+            <span class="btn-icon">🎙️</span> Ingest Note & Extract Action Items
+          </button>
+        </div>
+
+        <!-- Multi-Source Cross-Domain Fusion Card -->
+        <div class="glass-card" style="padding: 1.25rem; border-radius: var(--radius-lg); grid-column: 1 / -1;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+            <div style="display: flex; align-items: center; gap: 0.75rem;">
+              <span style="font-size: 1.5rem;">🌐</span>
+              <div>
+                <h3 style="font-size: 1.1rem; font-weight: 600; margin: 0;">Multi-Source Cross-Domain Fusion Hub</h3>
+                <span style="font-size: 0.8rem; color: var(--text-muted);">Correlates Gmail (Commitments) + Calendar (Cognitive Capacity) + Sleep/Health (Recovery) + Voice Notes</span>
+              </div>
+            </div>
+            <button id="btn-run-fusion-analysis" class="btn btn-primary btn-sm">
+              <span class="btn-icon">⚡</span> Run Cross-Domain Correlation Analysis
+            </button>
+          </div>
+          <div id="fusion-conflicts-container" style="background: rgba(0,0,0,0.25); border-radius: var(--radius-md); padding: 0.85rem; font-size: 0.85rem;">
+            <div style="color: var(--text-muted); font-size: 0.82rem;">Click 'Run Cross-Domain Correlation Analysis' to evaluate schedule conflicts and cognitive strain risks across all 4 streams.</div>
+          </div>
+        </div>
+
       </div>
 
       <!-- Monitored Capabilities Breakdown Table -->
