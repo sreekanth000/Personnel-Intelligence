@@ -1,0 +1,23 @@
+# Recurring Hermes Cron Task Configurations for Personal Intelligence
+# Used to schedule periodic sweeps and maintenance without constant user intervention.
+
+schedules:
+  - name: hourly_situation_sweep
+    cron: "0 * * * *"
+    description: "Hourly sweep of buffered events and timeline to evaluate emerging situations and novelty."
+    mode: "no-agent"
+    command: "python -m personal_intelligence.core.situations.sweep"
+
+  - name: daily_pattern_compaction
+    cron: "0 3 * * *"
+    description: "Nightly pattern learning and cadence consolidation over recent timeline entries."
+    mode: "no-agent"
+    command: "python -m personal_intelligence.core.patterns.compaction"
+
+  - name: daily_morning_digest_prep
+    cron: "30 6 * * *"
+    description: "Prepares morning situation briefing and active goal alignments."
+    mode: "agent"
+    prompt: "Evaluate current personal state and prepare morning situation briefing adhering to delivery policies."
+    skills:
+      - personal_investigation

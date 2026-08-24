@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Personal Intelligence Demo Dashboard</title>
+  <meta name="description" content="Local-first Personal Intelligence cognitive companion dashboard, epistemic situation engine, and live activity stream.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Header & Navigation Bar -->
+  <header class="app-header">
+    <div class="header-container">
+      <div class="brand-group">
+        <div class="brand-badge">PI</div>
+        <div>
+          <h1 class="brand-title">Personal Intelligence</h1>
+          <p class="brand-subtitle">Epistemic Companion & Situation Engine</p>
+        </div>
+      </div>
+
+      <!-- Main Navigation Tabs for the 7 Screens -->
+      <nav class="nav-tabs" id="nav-tabs">
+        <button class="nav-tab active" data-screen="overview" id="tab-overview">Overview</button>
+        <button class="nav-tab" data-screen="world-model" id="tab-world-model">World Model</button>
+        <button class="nav-tab" data-screen="situations" id="tab-situations">Situations</button>
+        <button class="nav-tab" data-screen="situation-detail" id="tab-situation-detail">Situation Detail</button>
+        <button class="nav-tab" data-screen="patterns" id="tab-patterns">Patterns</button>
+        <button class="nav-tab" data-screen="timeline" id="tab-timeline">Timeline</button>
+        <button class="nav-tab" data-screen="episodes" id="tab-episodes">Reasoning Episodes</button>
+        <button class="nav-tab" data-screen="sources" id="tab-sources">Data Sources</button>
+      </nav>
+
+      <div class="header-actions">
+        <!-- Mode Switcher (LIVE vs DEMO) -->
+        <div class="mode-toggle-group">
+          <button id="btn-mode-live" class="mode-btn active">LIVE</button>
+          <button id="btn-mode-demo" class="mode-btn">DEMO</button>
+        </div>
+
+        <div class="system-status">
+          <span class="status-pulse"></span>
+          <span id="system-status-text">127.0.0.1</span>
+        </div>
+        <button id="refresh-btn" class="btn btn-secondary btn-sm">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;">
+            <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+          </svg>
+          Refresh
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Epistemic Demarcation Legend Bar -->
+  <div class="legend-bar">
+    <div class="legend-container">
+      <span class="legend-title">Epistemic Demarcation:</span>
+      <span class="badge badge-fact">FACT</span>
+      <span class="badge badge-inference">INFERENCE</span>
+      <span class="badge badge-prediction">PREDICTION</span>
+      <span class="badge badge-recommendation">RECOMMENDATION</span>
+      <span class="badge badge-intervention">INTERVENTION</span>
+      <div id="stale-indicator" class="stale-badge hidden">⚠️ Stale Data (Syncing...)</div>
+    </div>
+  </div>
+
+  <!-- Demo Control Strip (Displayed when in Demo Mode) -->
+  <section class="demo-strip hidden" id="demo-control-strip">
+    <div class="demo-strip-container">
+      <div class="demo-label">🧪 DEMO SCENARIO CONTROLLER:</div>
+      <div class="demo-controls-group">
+        <label for="demo-scenario-select" class="demo-select-label">Scenario:</label>
+        <select id="demo-scenario-select" class="demo-select">
+          <option value="1">1. Forgotten Commitment (Gmail, Cal, Drive, Meet)</option>
+          <option value="2">2. Travel Risk (Cal, Weather, Location)</option>
+          <option value="3">3. Novel Situation (NOVEL_COMBINATION)</option>
+          <option value="4">4. Multi-Goal Conflict (Architecture vs Training)</option>
+          <option value="5">5. Pattern Discovery (Briefing Responsiveness)</option>
+        </select>
+        <button id="btn-demo-inject" class="btn btn-primary btn-sm">
+          <span class="btn-icon">⚡</span> Inject Events
+        </button>
+        <button id="btn-demo-run" class="btn btn-action btn-sm">
+          <span class="btn-icon">🧠</span> Run Intelligence
+        </button>
+        <button id="btn-demo-reset" class="btn btn-secondary btn-sm">
+          <span class="btn-icon">↺</span> Reset
+        </button>
+        <button id="btn-demo-clear" class="btn btn-secondary btn-sm">
+          <span class="btn-icon">🗑️</span> Clear
+        </button>
+        <button id="btn-toggle-operating-mode" class="btn btn-secondary btn-sm">
+          <span class="btn-icon">🔀</span> <span id="btn-mode-label">Switch to LIVE MODE</span>
+        </button>
+      </div>
+      <div id="operating-mode-badge" class="demo-mode-badge">DEMO MODE ACTIVE</div>
+    </div>
+  </section>
+
+  <!-- Interactive Action Control Strip -->
+  <section class="action-strip">
+    <div class="action-strip-container">
+      <div class="action-label">Interactive /pi Actions:</div>
+      <div class="action-buttons">
+        <button id="btn-action-live-flow" class="btn btn-primary" style="background: linear-gradient(135deg, #059669, #10b981);">
+          <span class="btn-icon">🚀</span> Real Google Live Flow
+        </button>
+        <button id="btn-action-what-matters" class="btn btn-action">
+          <span class="btn-icon">⚡</span> /pi what_matters
+        </button>
+        <button id="btn-action-what-changed" class="btn btn-action">
+          <span class="btn-icon">🔄</span> /pi what_changed
+        </button>
+        <button id="btn-action-test-sources" class="btn btn-action">
+          <span class="btn-icon">🔍</span> /pi test_sources
+        </button>
+        <button id="btn-action-connect-hermes" class="btn btn-action">
+          <span class="btn-icon">🔗</span> Connect Hermes
+        </button>
+        <button id="btn-action-investigate" class="btn btn-action">
+          <span class="btn-icon">🛠️</span> Investigate Gaps
+        </button>
+        <button id="btn-action-why" class="btn btn-action">
+          <span class="btn-icon">🩺</span> /pi why (Diagnostic)
+        </button>
+      </div>
+      <div id="action-status-indicator" class="action-status-indicator hidden">
+        <span class="spinner"></span> <span id="action-status-text">Executing command...</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Global Error Alert Banner -->
+  <div id="global-error-banner" class="error-banner hidden">
+    <span class="error-icon">⚠️</span>
+    <span id="global-error-text" class="error-text">Failed to connect to /api/pi/*</span>
+    <button id="error-dismiss-btn" class="error-dismiss">&times;</button>
+  </div>
+
+  <!-- Main Container -->
+  <main class="dashboard-main">
+
+    <!-- =====================================================================
+         ASK PERSONAL INTELLIGENCE INTERACTION CARD
+         ===================================================================== -->
+    <section class="ask-pi-section">
+      <div class="ask-pi-card">
+        <div class="ask-pi-header">
+          <div class="ask-pi-title-group">
+            <span class="ask-pi-icon">💡</span>
+            <div>
+              <h3 class="ask-pi-title">Ask Personal Intelligence</h3>
+              <span class="ask-pi-subtitle">Query your grounded Personal World Model, Situations, Goals, and Patterns</span>
+            </div>
+          </div>
+        </div>
+        <div class="ask-pi-input-wrapper">
+          <input type="text" id="ask-pi-input" class="ask-pi-input" placeholder="Ask anything (e.g., 'What should I be aware of today?', 'What am I likely to forget?')..." />
+          <button id="btn-ask-pi-submit" class="btn btn-primary">
+            <span class="btn-icon">⚡</span> Ask
+          </button>
+        </div>
+        <div class="ask-pi-chips">
+          <span class="ask-chip" data-query="What should I be aware of today?">What should I be aware of today?</span>
+          <span class="ask-chip" data-query="Did anything important change?">Did anything important change?</span>
+          <span class="ask-chip" data-query="What am I likely to forget?">What am I likely to forget?</span>
+          <span class="ask-chip" data-query="Do I have conflicting commitments?">Do I have conflicting commitments?</span>
+          <span class="ask-chip" data-query="Why are you recommending this?">Why are you recommending this?</span>
+          <span class="ask-chip" data-query="What patterns are you seeing?">What patterns are you seeing?</span>
+          <span class="ask-chip" data-query="What should I prepare for tomorrow?">What should I prepare for tomorrow?</span>
+        </div>
+
+        <!-- Dynamic Answer Result Container -->
+        <div id="ask-pi-result-container" class="ask-pi-result-container hidden"></div>
+      </div>
+    </section>
+
+    <!-- =====================================================================
+         SCREEN 1: OVERVIEW
+         ===================================================================== -->
+    <div id="screen-overview" class="screen-view active">
+      <div class="screen-header">
+        <h2 class="screen-title">System Overview</h2>
+        <span class="screen-subtitle">Cross-domain situational awareness & daily allocations</span>
+      </div>
+
+      <div class="dashboard-grid grid-2-col">
+        <!-- 1. Current State Summary -->
+        <section class="card current-state-card">
+          <div class="card-header">
+            <div class="card-title-group">
+              <span class="section-num">01</span>
+              <h3 class="card-title">Current State Matrix</h3>
+            </div>
+            <span class="card-meta" id="overview-state-time">--:--:--</span>
+          </div>
+          <div class="card-body">
+            <p class="state-lead-text" id="overview-state-summary">Loading multi-dimensional state...</p>
+            <div class="state-metrics-grid">
+              <div class="metric-pill">
+                <span class="metric-label">Activity</span>
+                <span class="metric-value" id="overview-activity">--</span>
+              </div>
+              <div class="metric-pill">
+                <span class="metric-label">Duration</span>
+                <span class="metric-value" id="overview-duration">--</span>
+              </div>
+              <div class="metric-pill">
+                <span class="metric-label">Location</span>
+                <span class="metric-value" id="overview-location">--</span>
+              </div>
+              <div class="metric-pill">
+                <span class="metric-label">Time Segment</span>
+                <span class="metric-value" id="overview-tod">--</span>
+              </div>
+            </div>
+            <div class="features-table-wrapper">
+              <h4 class="subsection-title">Derived Dimensions <span class="badge badge-fact">FACT</span></h4>
+              <div class="features-list" id="overview-features-container"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 2. Important Recommendations & Policy Interventions -->
+        <section class="card recommendations-card">
+          <div class="card-header">
+            <div class="card-title-group">
+              <span class="section-num">02</span>
+              <h3 class="card-title">Important Recommendations</h3>
+            </div>
+            <span class="badge badge-recommendation">Actionable Guidance</span>
+          </div>
+          <div class="card-body" id="overview-recommendations-container">
+            <div class="loading-skeleton">Loading recommendations...</div>
+          </div>
+        </section>
+      </div>
+
+      <!-- Live Execution Activity Stream & Situations/Goals Grid -->
+      <div class="dashboard-grid grid-2-col" style="margin-top: 1.5rem;">
+        <!-- Live Activity Stream (Execution Lifecycle) -->
+        <section class="card">
+          <div class="card-header">
+            <div class="card-title-group">
+              <span class="status-pulse"></span>
+              <h3 class="card-title">Live Execution Activity Stream</h3>
+            </div>
+            <span class="card-meta" id="activity-stream-count">0 events</span>
+          </div>
+          <div class="card-body" style="max-height: 420px; overflow-y: auto;">
+            <div class="activity-feed" id="live-activity-stream-container">
+              <div class="loading-skeleton">Listening for execution lifecycle events...</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Active Goals & Schedule Load -->
+        <div style="display: flex; flex-direction: column; gap: 1.25rem;">
+          <section class="card">
+            <div class="card-header">
+              <div class="card-title-group">
+                <span class="section-num">03</span>
+                <h3 class="card-title">Active Goals</h3>
+              </div>
+              <span class="card-count-badge" id="overview-goals-count">0 Active</span>
+            </div>
+            <div class="card-body" id="overview-goals-container">
+              <div class="loading-skeleton">Loading goals...</div>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-header">
+              <div class="card-title-group">
+                <span class="section-num">04</span>
+                <h3 class="card-title">Upcoming Commitments</h3>
+              </div>
+              <span class="card-meta">Schedule Load</span>
+            </div>
+            <div class="card-body" id="overview-commitments-container">
+              <div class="loading-skeleton">Loading commitments...</div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <!-- =====================================================================
+         SCREEN 2: WORLD MODEL
+         ===================================================================== -->
+    <div id="screen-world-model" class="screen-view hidden">
+      <div class="screen-header">
+        <h2 class="screen-title">Personal World Model</h2>
+        <span class="screen-subtitle">Comprehensive longitudinal entities, state dimensions, and active constraints</span>
+      </div>
+
+      <div class="dashboard-grid grid-2-col">
+        <section class="card">
+          <div class="card-header">
+            <h3 class="card-title">Derived State Dimensions</h3>
+            <span class="badge badge-fact">FACT</span>
+          </div>
+          <div class="card-body" id="wm-features-container"></div>
+        </section>
+
+        <section class="card">
+          <div class="card-header">
+            <h3 class="card-title">Active Goals & Priorities</h3>
+            <span class="badge badge-recommendation">GOALS</span>
+          </div>
+          <div class="card-body" id="wm-goals-container"></div>
+        </section>
+      </div>
+
+      <div class="dashboard-grid grid-2-col" style="margin-top: 1.5rem;">
+        <section class="card">
+          <div class="card-header">
+            <h3 class="card-title">Active Situational Context Frames</h3>
+            <span class="badge badge-prediction">SITUATIONS</span>
+          </div>
+          <div class="card-body" id="wm-situations-container"></div>
+        </section>
+
+        <section class="card">
+          <div class="card-header">
+            <h3 class="card-title">Structured World Model Snapshot (JSON)</h3>
+            <span class="card-meta">Raw Store</span>
+          </div>
+          <div class="card-body">
+            <pre class="json-code-block" id="wm-raw-json">Loading snapshot...</pre>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <!-- =====================================================================
+         SCREEN 3: SITUATIONS
+         ===================================================================== -->
+    <div id="screen-situations" class="screen-view hidden">
+      <div class="screen-header">
+        <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+          <div>
+            <h2 class="screen-title">Active Situations</h2>
+            <span class="screen-subtitle">Multi-stream tension frames requiring assessment</span>
+          </div>
+          <div class="filter-group" id="situation-priority-filters">
+            <button class="filter-btn active" data-priority="ALL">All Priorities</button>
+            <button class="filter-btn" data-priority="HIGH">High Priority</button>
+            <button class="filter-btn" data-priority="MEDIUM">Medium Priority</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="situations-full-list" id="situations-list-container">
+        <div class="loading-skeleton">Loading situations...</div>
+      </div>
+    </div>
+
+    <!-- =====================================================================
+         SCREEN 4: SITUATION DETAIL (9-STAGE VERTICAL VISUAL FLOW)
+         ===================================================================== -->
+    <div id="screen-situation-detail" class="screen-view hidden">
+      <div class="screen-header">
+        <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; flex-wrap: wrap; gap: 1rem;">
+          <div>
+            <h2 class="screen-title">Situation Epistemic Detail & Workflow</h2>
+            <span class="screen-subtitle">Step-by-step audit trace from signal trigger to intervention decision</span>
+          </div>
+          <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <select id="detail-situation-selector" class="select-dropdown">
+              <option value="">Select a situation...</option>
+            </select>
+            <button id="btn-detail-investigate" class="btn btn-primary btn-sm">🛠️ Re-investigate</button>
+            <button id="btn-detail-why" class="btn btn-action btn-sm">🩺 Why?</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 9-STAGE VERTICAL LIFECYCLE PIPELINE -->
+      <div class="lifecycle-pipeline-container" id="lifecycle-pipeline-container">
+        <div class="loading-skeleton">Select or load a situation to view vertical workflow...</div>
+      </div>
+    </div>
+
+    <!-- =====================================================================
+         SCREEN 5: PATTERNS
+         ===================================================================== -->
+    <div id="screen-patterns" class="screen-view hidden">
+      <div class="screen-header">
+        <h2 class="screen-title">Learned Patterns</h2>
+        <span class="screen-subtitle">Longitudinal behavioral and interaction regularities backed by empirical support</span>
+      </div>
+
+      <div class="patterns-grid" id="patterns-screen-container">
+        <div class="loading-skeleton">Loading learned patterns...</div>
+      </div>
+    </div>
+
+    <!-- =====================================================================
+         SCREEN 6: TIMELINE
+         ===================================================================== -->
+    <div id="screen-timeline" class="screen-view hidden">
+      <div class="screen-header">
+        <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; flex-wrap: wrap; gap: 1rem;">
+          <div>
+            <h2 class="screen-title">Personal Timeline Stream</h2>
+            <span class="screen-subtitle">Chronological ground-truth observations with complete source provenance</span>
+          </div>
+          <div class="timeline-filters" id="screen-timeline-filters">
+            <button class="filter-btn active" data-source="all">All Sources</button>
+            <button class="filter-btn" data-source="gmail">Gmail</button>
+            <button class="filter-btn" data-source="calendar">Calendar</button>
+            <button class="filter-btn" data-source="drive">Drive</button>
+            <button class="filter-btn" data-source="meet">Meet</button>
+            <button class="filter-btn" data-source="health_tracker">Health Tracker</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="timeline-list" id="screen-timeline-container" style="max-height: 700px;">
+        <div class="loading-skeleton">Loading timeline stream...</div>
+      </div>
+    </div>
+
+    <!-- =====================================================================
+         SCREEN 7: REASONING EPISODES
+         ===================================================================== -->
+    <div id="screen-episodes" class="screen-view hidden">
+      <div class="screen-header">
+        <h2 class="screen-title">Reasoning Episodes</h2>
+        <span class="screen-subtitle">Central audit and learning record with explicit epistemic segregation</span>
+      </div>
+
+      <div class="episodes-list" id="episodes-screen-container">
+        <div class="loading-skeleton">Loading reasoning episodes...</div>
+      </div>
+    </div>
+
+    <!-- =====================================================================
+         SCREEN 8: DATA SOURCES & HERMES CAPABILITIES
+         ===================================================================== -->
+    <div id="screen-sources" class="screen-view hidden">
+      <div class="screen-header">
+        <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; flex-wrap: wrap; gap: 1rem;">
+          <div>
+            <h2 class="screen-title">Data Sources & Runtime Connections</h2>
+            <span class="screen-subtitle">Inspect Hermes agent connection, Gmail status, capability readiness, and ground truth investigation logs</span>
+          </div>
+          <div class="header-actions">
+            <button id="btn-sources-refresh" class="btn btn-secondary btn-sm">
+              <span class="btn-icon">🔄</span> Re-probe Sources
+            </button>
+            <button id="btn-sources-connect-hermes" class="btn btn-primary btn-sm">
+              <span class="btn-icon">🔗</span> Connect Hermes
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Main Status Cards Grid -->
+      <div class="sources-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 1.25rem; margin-bottom: 1.5rem;">
+        
+        <!-- Hermes Runtime Card -->
+        <div class="glass-card" style="padding: 1.25rem; border-radius: var(--radius-lg);">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+            <div style="display: flex; align-items: center; gap: 0.75rem;">
+              <span style="font-size: 1.5rem;">🤖</span>
+              <div>
+                <h3 style="font-size: 1.1rem; font-weight: 600; margin: 0;">Hermes Agent</h3>
+                <span style="font-size: 0.8rem; color: var(--text-muted);">Host Execution Runtime</span>
+              </div>
+            </div>
+            <span id="hermes-status-badge" class="badge badge-fact">CHECKING...</span>
+          </div>
+
+          <div style="background: rgba(0,0,0,0.25); border-radius: var(--radius-md); padding: 0.75rem; margin-bottom: 1rem; font-size: 0.85rem;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 0.35rem;">
+              <span style="color: var(--text-muted);">Installation:</span>
+              <strong id="hermes-installed-val">--</strong>
+            </div>
+            <div style="display: flex; justify-content: space-between; margin-bottom: 0.35rem;">
+              <span style="color: var(--text-muted);">Reachability:</span>
+              <strong id="hermes-reachable-val">--</strong>
+            </div>
+            <div style="display: flex; justify-content: space-between;">
+              <span style="color: var(--text-muted);">Mechanism:</span>
+              <span id="hermes-mechanism-val" style="font-family: monospace; font-size: 0.8rem;">--</span>
+            </div>
+          </div>
+
+          <div id="hermes-diagnostics-container"></div>
+
+          <div id="hermes-action-container">
+            <button id="btn-card-connect-hermes" class="btn btn-primary" style="width: 100%;">
+              <span class="btn-icon">🔗</span> Connect Hermes
+            </button>
+          </div>
+        </div>
+
+        <!-- Gmail Capability Card -->
+        <div class="glass-card" style="padding: 1.25rem; border-radius: var(--radius-lg);">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+            <div style="display: flex; align-items: center; gap: 0.75rem;">
+              <span style="font-size: 1.5rem;">✉️</span>
+              <div>
+                <h3 style="font-size: 1.1rem; font-weight: 600; margin: 0;">Gmail</h3>
+                <span style="font-size: 0.8rem; color: var(--text-muted);">Bounded Read-Only Inquiry</span>
+              </div>
+            </div>
+            <span id="gmail-status-badge" class="badge badge-fact">CHECKING...</span>
+          </div>
+
+          <!-- Mandatory Notice -->
+          <div style="background: rgba(59, 130, 246, 0.08); border-left: 3px solid var(--accent-blue); padding: 0.6rem 0.75rem; border-radius: 4px; margin-bottom: 1rem; font-size: 0.82rem; color: var(--text-secondary);">
+            ℹ️ <strong>Gmail connection and authentication are managed by Hermes.</strong>
+          </div>
+
+          <!-- Last Successful Investigation Box -->
+          <div style="background: rgba(0,0,0,0.25); border-radius: var(--radius-md); padding: 0.75rem; margin-bottom: 1rem; font-size: 0.85rem;">
+            <div style="font-weight: 600; color: var(--text-accent); margin-bottom: 0.4rem; font-size: 0.8rem; text-transform: uppercase;">Last Successful Gmail Investigation:</div>
+            <div id="gmail-last-inv-container">
+              <div style="color: var(--text-muted); font-size: 0.82rem;">No recorded investigation yet in current session.</div>
+            </div>
+          </div>
+
+          <!-- Dynamic Action Container (Connect Gmail in Hermes button when unauthenticated) -->
+          <div id="gmail-action-container"></div>
+        </div>
+
+      </div>
+
+      <!-- Monitored Capabilities Breakdown Table -->
+      <div class="glass-card" style="padding: 1.25rem; border-radius: var(--radius-lg); margin-bottom: 1.5rem;">
+        <h3 style="font-size: 1.05rem; font-weight: 600; margin-bottom: 0.75rem; color: var(--text-primary);">Canonical Hermes Capabilities (7 Monitored Domains)</h3>
+        <div id="sources-capabilities-container">
+          <div class="loading-skeleton">Loading capability breakdown...</div>
+        </div>
+      </div>
+
+    </div>
+
+  </main>
+
+  <!-- Modal Dialog for /pi why, /pi what_changed, /pi test_sources & Investigation Results -->
+  <div id="action-modal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <span id="modal-badge" class="badge badge-intervention">DIAGNOSTIC</span>
+          <h3 id="modal-title" class="modal-title">Action Results</h3>
+        </div>
+        <button id="modal-close-btn" class="modal-close-btn">&times;</button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+      <div class="modal-footer">
+        <button id="modal-ok-btn" class="btn btn-secondary">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <footer class="app-footer">
+    <div class="footer-container">
+      <p>Personal Intelligence &bull; Localhost SQLite &bull; Strict Epistemic Demarcation &bull; Zero External Telemetry</p>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

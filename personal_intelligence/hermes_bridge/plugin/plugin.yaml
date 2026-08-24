@@ -1,0 +1,35 @@
+name: personal_intelligence
+version: "0.1.0"
+description: "Hermes plugin exposing Personal Intelligence state, timeline, goals, situations, bounded context, and reasoning episode storage."
+entrypoint: "__init__.py:register"
+author: "Personal Intelligence System"
+license: "MIT"
+tools:
+  - name: get_current_personal_state
+    description: "Query the user's current multi-dimensional state representation."
+  - name: get_personal_timeline
+    description: "Query a bounded, chronological slice of recent personal events from the timeline source of truth."
+  - name: get_active_goals
+    description: "Query active personal goals, priorities, and contextual objectives from GoalStore."
+  - name: get_situation
+    description: "Query a specific situation context frame by ID."
+  - name: get_reasoning_context
+    description: "Construct a bounded, relevance-filtered reasoning context for a Situation."
+  - name: store_reasoning_episode
+    description: "Record the outcome of a Hermes situational reasoning investigation back to the audit history."
+  - name: record_observation
+    description: "Record a normalized personal observation encountered during Hermes tool execution with provenance."
+  - name: get_personal_world_model
+    description: "Retrieve the structured Personal World Model snapshot (Current State, Timeline, Goals, Open Situations, Known Patterns, Emerging Hypotheses)."
+  - name: evaluate_candidate_situations
+    description: "Synthesizes Personal World Model signals to discover candidate situations across 9 generic categories without unprompted user actions."
+  - name: execute_pi_command
+    description: "Execute a Hermes Personal Intelligence (/pi) command mode (status, what_matters, what_changed, investigate, why, patterns, timeline, goals, situations, briefing)."
+commands:
+  - name: /pi
+    description: "Personal Intelligence command interface. Modes: status, what_matters, what_changed, investigate, why, patterns, timeline, goals, situations, briefing."
+
+hooks:
+  - pre_tool_call
+  - post_tool_call
+
