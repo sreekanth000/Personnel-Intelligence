@@ -40,8 +40,11 @@ class TestSituationInvestigatorRefactor(unittest.TestCase):
     """Test suite verifying bounded, multi-round SituationInvestigator without direct APIs."""
 
     def setUp(self) -> None:
-        self.event_store = EventStore()
-        self.situation_store = SituationStore()
+        from personal_intelligence.storage.db import DatabaseManager
+        self.db = DatabaseManager(":memory:")
+        self.db.initialize_schema()
+        self.event_store = EventStore(db_manager=self.db)
+        self.situation_store = SituationStore(db_manager=self.db)
         self.base_time = datetime(2026, 8, 22, 14, 0, 0, tzinfo=timezone.utc)
 
     # -------------------------------------------------------------------------

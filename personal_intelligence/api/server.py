@@ -832,8 +832,11 @@ class DashboardDataService:
 
     def get_timeline_payload(self, limit: int = 50) -> List[Dict[str, Any]]:
         """Returns validated timeline events with provenance metadata."""
-        tl = self.current_timeline_engine.get_time_range(limit=limit)
-        events = tl.events
+        tl = self.current_timeline_engine.get_time_range(limit=limit * 2)
+        events = [
+            e for e in tl.events
+            if not (e.source in ("sample_generator", "mock_host") or str(e.id).startswith("obs-inv-task-") or "synthetic" in e.event_type)
+        ][:limit]
         if not events and self.is_demo_mode:
             events = self.timeline_engine.get_time_range(limit=limit).events
         return [
