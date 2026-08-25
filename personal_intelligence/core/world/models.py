@@ -295,7 +295,7 @@ class CurrentState:
 @dataclass
 class PersonalWorldModelSnapshot:
     """
-    Unified snapshot of the entire Personal World Model across all 6 core dimensions.
+    Unified snapshot of the entire Personal World Model across all core dimensions.
     """
     current_state: CurrentState
     timeline_events: List[Dict[str, Any]]
@@ -303,6 +303,7 @@ class PersonalWorldModelSnapshot:
     open_situations: List[Dict[str, Any]]
     known_patterns: List[Dict[str, Any]]
     emerging_hypotheses: List[Dict[str, Any]]
+    ground_truth_facts: List[Dict[str, Any]] = field(default_factory=list)
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def __post_init__(self) -> None:
@@ -312,6 +313,7 @@ class PersonalWorldModelSnapshot:
         return {
             "timestamp": format_iso8601(self.timestamp),
             "current_state": self.current_state.to_dict(),
+            "ground_truth_facts": self.ground_truth_facts,
             "timeline": self.timeline_events,
             "goals": self.goals,
             "open_situations": self.open_situations,

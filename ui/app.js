@@ -641,52 +641,97 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const cs = data.current_state || {};
 
-    // 1. Derived Features & State Dimensions
-    const featContainer = document.getElementById("wm-features-container");
-    const feats = cs.computed_features || data.computed_features || {};
-    const featKeys = Object.keys(feats);
-    if (featContainer) {
-      if (featKeys.length === 0) {
-        featContainer.innerHTML = `<div class="empty-state">No computed state dimensions.</div>`;
+    // 1. Ground-Truth Verified Facts
+    const factsContainer = document.getElementById("wm-facts-container");
+    const factsCountEl = document.getElementById("wm-facts-count");
+    const facts = data.ground_truth_facts || [];
+    
+    if (factsCountEl) {
+      factsCountEl.textContent = `${facts.length} Verified Fact${facts.length === 1 ? '' : 's'}`;
+    }
+
+    if (factsContainer) {
+      if (facts.length === 0) {
+        factsContainer.innerHTML = `<div class="empty-state">No verified ground-truth facts observed in EventStore yet. Ingest Gmail, Calendar, or Voice Notes to populate.</div>`;
       } else {
-        featContainer.innerHTML = `
-          <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.6rem;">
-            ${featKeys.map(k => {
-              const val = feats[k];
-              const displayVal = typeof val === "object" ? JSON.stringify(val) : String(val);
-              return `
-                <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: var(--radius-md); padding: 0.6rem 0.8rem;">
-                  <div style="font-size: 0.7rem; font-family: var(--font-mono); color: var(--text-accent); text-transform: uppercase; font-weight: 700;">${escapeHtml(k.replace(/_/g, " "))}</div>
-                  <div style="font-size: 0.95rem; font-weight: 600; color: #fff; margin-top: 0.2rem; word-break: break-all;">${escapeHtml(displayVal)}</div>
-                  <div style="font-size: 0.68rem; color: var(--text-muted); margin-top: 0.2rem;">World Model Inferred Feature</div>
+        factsContainer.innerHTML = facts.map(f => {
+          let domainColor = "var(--accent-primary)";
+          let domainIcon = "⚡";
+          const dLower = String(f.domain_source || f.source || "").toLowerCase();
+          if (dLower.includes("gmail") || dLower.includes("email")) {
+            domainColor = "#38bdf8";
+            domainIcon = "✉️";
+          } else if (dLower.includes("calendar")) {
+            domainColor = "#f59e0b";
+            domainIcon = "📅";
+          } else if (dLower.includes("voice") || dLower.includes("transcript")) {
+            domainColor = "#c084fc";
+            domainIcon = "🎙️";
+          } else if (dLower.includes("feedback") || dLower.includes("user")) {
+            domainColor = "#10b981";
+            domainIcon = "✅";
+          }
+
+          return `
+            <div class="pipeline-list-item" style="justify-content: space-between; margin-bottom: 0.6rem; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); padding: 0.7rem 0.9rem; border-radius: var(--radius-md);">
+              <div style="flex: 1; min-width: 0; margin-right: 1rem;">
+                <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.3rem;">
+                  <span style="font-size: 0.72rem; font-family: var(--font-mono); font-weight: 700; color: ${domainColor};">${domainIcon} ${escapeHtml(f.domain_source || f.source)}</span>
+                  <span class="badge badge-fact" style="font-size: 0.65rem; padding: 0.15rem 0.4rem;">FACT</span>
+                  <span style="font-size: 0.72rem; color: var(--text-muted);">${escapeHtml(formatTime(f.observed_at))}</span>
                 </div>
-              `;
-            }).join("")}
-          </div>
-        `;
+                <div style="font-weight: 600; color: #fff; font-size: 0.92rem; line-height: 1.35; word-break: break-word;">${escapeHtml(f.summary)}</div>
+                <div style="font-size: 0.72rem; font-family: var(--font-mono); color: var(--text-muted); margin-top: 0.3rem; word-break: break-all;">Provenance: ${escapeHtml(f.provenance || 'local_event_store')}</div>
+              </div>
+            </div>
+          `;
+        }).join("");
       }
     }
 
-    // 2. Active Goals
-    const goalsContainer = document.getElementById("wm-goals-container");
-    const goals = (data.goals && data.goals.length > 0) ? data.goals : (cs.known_goals || []);
-    if (goalsContainer) {
-      if (goals.length === 0) {
-        goalsContainer.innerHTML = `<div class="empty-state">No active goals registered in GoalStore.</div>`;
+    // 2. Active Commitments & Obligations
+    const commitContainer = document.getElementById("wm-commitments-container");
+    const commitments = cs.current_commitments || [];
+    if (commitContainer) {
+      if (commitments.length === 0) {
+        commitContainer.innerHTML = `<div class="empty-state">No pending commitments derived from observations.</div>`;
       } else {
-        goalsContainer.innerHTML = goals.map(g => `
+        commitContainer.innerHTML = commitments.map(c => `
           <div class="pipeline-list-item" style="justify-content: space-between; margin-bottom: 0.5rem; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); padding: 0.6rem 0.8rem; border-radius: var(--radius-md);">
             <div>
-              <div style="font-weight: 600; color: #fff;">${escapeHtml(g.name || g.title || "Goal")}</div>
-              <div style="font-size: 0.78rem; color: var(--text-muted); margin-top: 0.2rem;">${escapeHtml(g.description || "Active priority goal")}</div>
+              <div style="font-weight: 600; color: #fff;">${escapeHtml(c.description)}</div>
+              <div style="font-size: 0.74rem; color: var(--text-muted); margin-top: 0.2rem;">
+                ${c.due_at ? `Due: ${escapeHtml(formatTime(c.due_at))}` : 'Ongoing Commitment'} • Source: ${escapeHtml(c.metadata?.origin || c.metadata?.source || 'Derived')}
+              </div>
             </div>
-            <span class="badge badge-recommendation">${escapeHtml((g.priority || "HIGH").toUpperCase())}</span>
+            <span class="badge badge-recommendation">${escapeHtml((c.status || 'PENDING').toUpperCase())}</span>
           </div>
         `).join("");
       }
     }
 
-    // 3. Situations
+    // 3. Upcoming Scheduled Blocks
+    const upcomingContainer = document.getElementById("wm-upcoming-container");
+    const upcoming = cs.upcoming_events || [];
+    if (upcomingContainer) {
+      if (upcoming.length === 0) {
+        upcomingContainer.innerHTML = `<div class="empty-state">No upcoming calendar reservations in window.</div>`;
+      } else {
+        upcomingContainer.innerHTML = upcoming.map(u => `
+          <div class="pipeline-list-item" style="justify-content: space-between; margin-bottom: 0.5rem; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); padding: 0.6rem 0.8rem; border-radius: var(--radius-md);">
+            <div>
+              <div style="font-weight: 600; color: #fff;">${escapeHtml(u.title)}</div>
+              <div style="font-size: 0.74rem; color: var(--text-muted); margin-top: 0.2rem;">
+                ${escapeHtml(formatTime(u.start_time))} • ${escapeHtml(u.metadata?.location || 'Virtual / Online')}
+              </div>
+            </div>
+            <span class="badge badge-intervention">${u.metadata?.duration_minutes ? `${u.metadata.duration_minutes}m` : 'EVENT'}</span>
+          </div>
+        `).join("");
+      }
+    }
+
+    // 4. Situations
     const sitsContainer = document.getElementById("wm-situations-container");
     const sits = (data.open_situations && data.open_situations.length > 0) ? data.open_situations : (cs.active_situations || []);
     if (sitsContainer) {
@@ -714,7 +759,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     }
 
-    // 4. Raw JSON Snapshot
+    // 5. Raw JSON Snapshot
     const rawEl = document.getElementById("wm-raw-json");
     if (rawEl) {
       rawEl.textContent = JSON.stringify(data, null, 2);

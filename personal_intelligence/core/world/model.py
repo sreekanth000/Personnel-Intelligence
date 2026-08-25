@@ -574,13 +574,17 @@ class PersonalWorldModel:
             reference_time or datetime.now(timezone.utc), "reference_time"
         )
 
-        # 1. Commitments (pending or in progress)
+        # 1. Commitments (deduplicate by description + due_at)
         commitment_entities = self.entity_store.list_by_type("commitment")
         commitments: List[Commitment] = []
+        seen_commitments = set()
         for ent in commitment_entities:
             c = Commitment.from_dict(ent.state)
             if c.status in {CommitmentStatus.PENDING.value, CommitmentStatus.IN_PROGRESS.value}:
-                commitments.append(c)
+                key = (c.description.strip().lower(), str(c.due_at))
+                if key not in seen_commitments:
+                    seen_commitments.add(key)
+                    commitments.append(c)
 
         # 2. Open Issues (open or investigating)
         issue_entities = self.entity_store.list_by_type("open_issue")
@@ -590,15 +594,30 @@ class PersonalWorldModel:
             if iss.status in {IssueStatus.OPEN.value, IssueStatus.INVESTIGATING.value}:
                 open_issues.append(iss)
 
-        # 3. Upcoming Events (from recent calendar observations or future timestamps)
+        # 3. Upcoming Events (query next 7 days from TimelineEngine)
         upcoming_events: List[UpcomingEvent] = []
-        recent_events = self.timeline_engine.get_last_n_hours(48, reference_time=ref_dt)
-        for ev in recent_events.events:
+        window_events = self.timeline_engine.get_time_range(
+            start_time=ref_dt - timedelta(hours=24),
+            end_time=ref_dt + timedelta(days=7),
+            limit=100,
+        )
+        seen_event_ids = set()
+        for ev in window_events.events:
             if ev.source == "calendar" or "calendar" in ev.event_type:
+                if ev.id in seen_event_ids:
+                    continue
+                seen_event_ids.add(ev.id)
                 payload = ev.payload if isinstance(ev.payload, dict) else {}
                 evidence = payload.get("evidence", {}) if isinstance(payload.get("evidence"), dict) else payload
-                title = evidence.get("event_title") or evidence.get("title") or payload.get("summary") or "Calendar Event"
-                start_str = evidence.get("start_time") or format_iso8601(ev.event_time)
+                title = (
+                    evidence.get("event_title")
+                    or evidence.get("title")
+                    or payload.get("event_title")
+                    or payload.get("title")
+                    or payload.get("summary")
+                    or "Calendar Event"
+                )
+                start_str = evidence.get("start_time") or payload.get("start_time") or format_iso8601(ev.event_time)
                 try:
                     start_dt = ensure_timezone_aware(start_str, "start_time")
                 except Exception:
@@ -608,8 +627,8 @@ class PersonalWorldModel:
                     source_observation_id=ev.id,
                     origin_source="calendar",
                     source_id=ev.source_id,
-                    tool=ev.provenance.get("tool") if ev.provenance else "google_workspace_calendar",
-                    retrieval_query=ev.provenance.get("query") if ev.provenance else None,
+                    tool=ev.provenance.get("tool") if isinstance(ev.provenance, dict) else "google_calendar",
+                    retrieval_query=ev.provenance.get("query") if isinstance(ev.provenance, dict) else None,
                     recorded_at=ev.event_time,
                 )
 
@@ -621,23 +640,24 @@ class PersonalWorldModel:
                         origin_source="calendar",
                         source_observation_id=ev.id,
                         provenance=prov,
-                        metadata=evidence,
+                        metadata=payload,
                     )
                 )
 
-        # 4. Recent Important Activity (salient events from last 24h)
+        # 4. Recent Important Activity (salient events from last 48h)
         important_activity: List[ImportantActivity] = []
-        for ev in recent_events.events[-10:]:
+        recent_events = self.timeline_engine.get_last_n_hours(48, reference_time=ref_dt)
+        for ev in recent_events.events[-15:]:
             payload = ev.payload if isinstance(ev.payload, dict) else {}
-            summary = payload.get("summary") or f"{ev.event_type} from {ev.source}"
+            summary = payload.get("summary") or payload.get("finding") or f"{ev.event_type} from {ev.source}"
             evidence = payload.get("evidence", {}) if isinstance(payload.get("evidence"), dict) else {}
 
             prov = FactProvenance(
                 source_observation_id=ev.id,
                 origin_source=ev.source,
                 source_id=ev.source_id,
-                tool=ev.provenance.get("tool") if ev.provenance else None,
-                retrieval_query=ev.provenance.get("query") if ev.provenance else None,
+                tool=ev.provenance.get("tool") if isinstance(ev.provenance, dict) else None,
+                retrieval_query=ev.provenance.get("query") if isinstance(ev.provenance, dict) else None,
                 recorded_at=ev.event_time,
             )
 
@@ -673,6 +693,69 @@ class PersonalWorldModel:
             computed_features=computed_feats,
             timestamp=ref_dt,
         )
+
+    def get_ground_truth_facts(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Returns grounded, verifiable facts extracted directly from authentic observations in EventStore.
+        Excludes mock/synthetic sample entries.
+        """
+        all_events = self.event_store.get_recent(limit=limit)
+        facts: List[Dict[str, Any]] = []
+
+        for ev in all_events:
+            # Skip sample_generator or mock events
+            if ev.source in ("sample_generator", "mock_host") or "synthetic" in ev.event_type:
+                continue
+
+            payload = ev.payload if isinstance(ev.payload, dict) else {}
+            
+            # Format clean, authentic fact summary
+            source_label = ev.source.upper()
+            if ev.source == "gmail":
+                source_label = "Gmail"
+                summary = payload.get("summary") or payload.get("finding") or "Email communication received."
+            elif ev.source == "calendar":
+                source_label = "Google Calendar"
+                sum_text = payload.get("summary") or "Calendar Event"
+                dur = payload.get("duration_minutes", 60)
+                summary = f"{sum_text} ({dur} mins)"
+            elif ev.source == "voice_notes":
+                source_label = "Voice Notes"
+                actions = payload.get("action_items", [])
+                act_str = f" • Action Items: {', '.join(actions)}" if actions else ""
+                summary = f"{payload.get('title', 'Voice Memo')}: {payload.get('summary', '')}{act_str}"
+            elif ev.source == "user_interface":
+                source_label = "User Feedback"
+                act = str(payload.get("action", "feedback")).upper()
+                notes = payload.get("notes") or ""
+                summary = f"User feedback recorded [{act}] on situation {payload.get('situation_id', '')} {notes}".strip()
+            else:
+                summary = payload.get("summary") or f"{ev.event_type} observation"
+
+            provenance_info = "verified_local_event"
+            if isinstance(ev.provenance, dict):
+                chain = ev.provenance.get("provenance_chain") or []
+                if chain:
+                    provenance_info = str(chain[0])
+                elif ev.provenance.get("tool"):
+                    provenance_info = f"tool:{ev.provenance.get('tool')}"
+            elif ev.source_id:
+                provenance_info = f"{ev.source}:{ev.source_id}"
+
+            facts.append({
+                "fact_id": ev.id,
+                "domain_source": source_label,
+                "source": ev.source,
+                "event_type": ev.event_type,
+                "summary": summary,
+                "observed_at": format_iso8601(ev.event_time),
+                "epistemic_level": "FACT",
+                "confidence": ev.confidence if ev.confidence is not None else 1.0,
+                "provenance": provenance_info,
+                "payload": payload,
+            })
+
+        return facts
 
     def get_timeline(
         self,
@@ -726,13 +809,14 @@ class PersonalWorldModel:
 
     def get_snapshot(self, reference_time: Optional[datetime] = None) -> PersonalWorldModelSnapshot:
         """
-        Returns the unified Personal World Model Snapshot spanning all 6 required sections:
-        CURRENT STATE, TIMELINE, GOALS, OPEN SITUATIONS, KNOWN PATTERNS, EMERGING HYPOTHESES.
+        Returns the unified Personal World Model Snapshot spanning all required sections:
+        CURRENT STATE, GROUND TRUTH FACTS, TIMELINE, GOALS, OPEN SITUATIONS, KNOWN PATTERNS, EMERGING HYPOTHESES.
         """
         now = ensure_timezone_aware(
             reference_time or datetime.now(timezone.utc), "reference_time"
         )
         current_state = self.get_current_state(reference_time=now)
+        ground_truth_facts = self.get_ground_truth_facts(limit=100)
         timeline_events = self.get_timeline(last_n_hours=24, reference_time=now)
         goals = self.get_goals(status="active")
         open_situations = self.get_open_situations()
@@ -741,6 +825,7 @@ class PersonalWorldModel:
 
         return PersonalWorldModelSnapshot(
             current_state=current_state,
+            ground_truth_facts=ground_truth_facts,
             timeline_events=timeline_events,
             goals=goals,
             open_situations=open_situations,
