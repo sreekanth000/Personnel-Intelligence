@@ -24,7 +24,7 @@ Instead, **Personal Intelligence** operates as a single, holistic intelligence l
 │                                                                                 │
 │  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────────────┐  │
 │  │ Event Model  │──▶│  State and   │──▶│  Situations  │──▶│ Context Builder  │  │
-│  │ (Arbitrary)  │   │   Timeline   │   │  and Novelty │   │ (Bundled Frames) │  │
+│  │ (Arbitrary)  │   │   Timeline   │   │   & Graph    │   │ (Bundled Frames) │  │
 │  └──────────────┘   └──────────────┘   └──────────────┘   └────────┬─────────┘  │
 │         │                  │                  │                    │            │
 │         ▼                  ▼                  ▼                    ▼            │
@@ -41,9 +41,62 @@ Instead, **Personal Intelligence** operates as a single, holistic intelligence l
 │                                                                                 │
 │   • Persistent Agent Loop         • Web Search & Browser (Headless/Interactive) │
 │   • Tool Execution Engine         • Skills System (agentskills.io)              │
-│   • Cron Task Scheduler           • Layered Memory (FTS5 / Markdown)            │
+│   • Cron Task Scheduler           • Layered Memory (FTS5 / Vector)              │
 │   • Bounded Actions               • LLM Invocation & Gateway                    │
 └─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Complete System Architecture Diagram:
+
+```mermaid
+graph TD
+    subgraph Ingestion["Multi-Source Event Ingestion Layer"]
+        Gmail["Gmail (Read-Only)"]
+        Calendar["Calendar (Read-Only)"]
+        Drive["Drive (Read-Only)"]
+        Meet["Meet Transcripts"]
+        Health["Biometrics & Health Tracker"]
+        FS["Local Filesystem"]
+    end
+
+    subgraph World_Model["Personal World Model (Unified Core Engine)"]
+        KG["Entity Knowledge Graph (EntityNode / EntityEdge)"]
+        PF["Probabilistic Facts (Bayesian P(H|E) & Belief Scores)"]
+        MD["Temporal Memory Salience Decay (Ebbinghaus Curve)"]
+        Simulator["Counterfactual 'What-If' Simulator"]
+        DAG["Hierarchical Goal & Constraint DAGs"]
+        Provenance["Cascading Truth & Retraction Lineage"]
+        Timeline["Unified Chronological Timeline Engine"]
+    end
+
+    subgraph Reasoning["Epistemic Pipeline & Intervention Governance"]
+        SitEngine["Situation Engine & Statistical Novelty Detector"]
+        ContextBldg["Bounded Context Assembly"]
+        PolicyEngine["Intervention Policy Engine (Attention Budgeting)"]
+        AuditLog["Reasoning Episode Store (Single Audit Trail)"]
+    end
+
+    subgraph Hermes_Runtime["Hermes Agent Runtime"]
+        Bridge["Native Plugin & Capability Contract"]
+        LLM["LLM Gateway & Reasoning Loop"]
+        Tools["Bounded Read-Only Tools"]
+    end
+
+    Ingestion -->|Normalized Events & Provenance| Timeline
+    Timeline --> KG
+    KG --> PF
+    PF --> MD
+    PF --> Provenance
+    DAG --> Simulator
+    Timeline --> SitEngine
+    KG --> SitEngine
+    SitEngine --> ContextBldg
+    ContextBldg --> Bridge
+    Bridge --> LLM
+    LLM --> Tools
+    Tools --> AuditLog
+    AuditLog --> PolicyEngine
+    PolicyEngine -->|USER DECISION GATE| Presentation["UI Dashboard & Notifications"]
 ```
 
 ---
