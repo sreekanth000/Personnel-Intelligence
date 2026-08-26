@@ -71,6 +71,8 @@ CREATE TABLE IF NOT EXISTS goals (
     description TEXT,
     priority TEXT NOT NULL DEFAULT 'medium',
     status TEXT NOT NULL DEFAULT 'active',
+    parent_goal_id TEXT,
+    sub_goal_ids_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -232,3 +234,53 @@ CREATE TABLE IF NOT EXISTS vector_embeddings (
 );
 
 CREATE INDEX IF NOT EXISTS idx_vec_source ON vector_embeddings(source_type, source_id);
+
+-- Entity Nodes for Personal Knowledge Graph
+CREATE TABLE IF NOT EXISTS entity_nodes (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    aliases_json TEXT NOT NULL DEFAULT '[]',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_entity_nodes_name ON entity_nodes(name);
+CREATE INDEX IF NOT EXISTS idx_entity_nodes_type ON entity_nodes(entity_type);
+
+-- Entity Edges for Personal Knowledge Graph
+CREATE TABLE IF NOT EXISTS entity_edges (
+    id TEXT PRIMARY KEY,
+    source_id TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    relationship TEXT NOT NULL,
+    weight REAL NOT NULL DEFAULT 1.0,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (source_id) REFERENCES entity_nodes(id) ON DELETE CASCADE,
+    FOREIGN KEY (target_id) REFERENCES entity_nodes(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_entity_edges_source ON entity_edges(source_id);
+CREATE INDEX IF NOT EXISTS idx_entity_edges_target ON entity_edges(target_id);
+CREATE INDEX IF NOT EXISTS idx_entity_edges_rel ON entity_edges(relationship);
+
+-- Probabilistic Facts with Bayesian Belief Scores
+CREATE TABLE IF NOT EXISTS probabilistic_facts (
+    id TEXT PRIMARY KEY,
+    subject TEXT NOT NULL,
+    predicate TEXT NOT NULL,
+    object TEXT NOT NULL,
+    belief_score REAL NOT NULL DEFAULT 0.5,
+    salience_score REAL NOT NULL DEFAULT 1.0,
+    status TEXT NOT NULL DEFAULT 'active',
+    provenance_json TEXT NOT NULL DEFAULT '{}',
+    evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_facts_triple ON probabilistic_facts(subject, predicate, object);
+CREATE INDEX IF NOT EXISTS idx_facts_status ON probabilistic_facts(status);
+

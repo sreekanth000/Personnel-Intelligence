@@ -51,6 +51,9 @@ from personal_intelligence.core.state.engine import StateEngine
 from personal_intelligence.core.state.entity_store import EntityState
 from personal_intelligence.core.timeline.engine import TimelineEngine
 
+from personal_intelligence.core.world.graph import EntityGraphStore, EntityNode, EntityEdge
+from personal_intelligence.core.world.simulator import WorldModelSimulator, SimulationResult
+
 from personal_intelligence.core.world.models import (
     Commitment,
     CommitmentStatus,
@@ -61,6 +64,7 @@ from personal_intelligence.core.world.models import (
     IssueStatus,
     OpenIssue,
     PersonalWorldModelSnapshot,
+    ProbabilisticFact,
     UpcomingEvent,
 )
 from personal_intelligence.storage.db import DatabaseManager
@@ -90,11 +94,13 @@ class PersonalWorldModel:
         self.pattern_store = self.local_store.pattern_store
         self.episode_store = self.local_store.episode_store
 
+        self.graph_store = EntityGraphStore(db_manager=self.db_manager)
         self.timeline_engine = TimelineEngine(event_store=self.event_store)
         self.goal_engine = GoalEngine(
             goal_store=self.goal_store,
             timeline_engine=self.timeline_engine,
         )
+        self.simulator = WorldModelSimulator(goal_engine=self.goal_engine)
         self.state_engine = StateEngine(
             timeline_engine=self.timeline_engine,
             goal_store=self.goal_store,
@@ -835,5 +841,141 @@ class PersonalWorldModel:
         )
 
     def to_dict(self) -> Dict[str, Any]:
-        """Serializes current snapshot into a standard dictionary representation."""
+        """Serializes current unified world model snapshot to JSON-serializable dict."""
         return self.get_snapshot().to_dict()
+
+    # -------------------------------------------------------------------------
+    # Next-Gen World Model Enhancements (Graph, Probabilistic, Simulation, Lineage)
+    # -------------------------------------------------------------------------
+
+    def record_probabilistic_fact(
+        self,
+        subject: str,
+        predicate: str,
+        object: str,
+        initial_confidence: float = 0.5,
+        evidence_id: Optional[str] = None,
+        provenance: Optional[Dict[str, Any]] = None,
+    ) -> ProbabilisticFact:
+        """
+        Ingests or reinforces a probabilistic fact using Bayesian update rules.
+        """
+        conn = self.db_manager.get_connection()
+        try:
+            with conn:
+                row = conn.execute(
+                    "SELECT * FROM probabilistic_facts WHERE subject=? AND predicate=? AND object=?",
+                    (subject, predicate, object),
+                ).fetchone()
+
+                if row:
+                    fact = ProbabilisticFact.from_dict(dict(row))
+                    fact.reinforce_evidence(initial_confidence)
+                    if evidence_id and evidence_id not in fact.evidence_ids:
+                        fact.evidence_ids.append(evidence_id)
+                else:
+                    fact = ProbabilisticFact(
+                        subject=subject,
+                        predicate=predicate,
+                        object=object,
+                        belief_score=initial_confidence,
+                        salience_score=1.0,
+                        evidence_ids=[evidence_id] if evidence_id else [],
+                        provenance=provenance or {},
+                    )
+
+                conn.execute(
+                    """
+                    INSERT INTO probabilistic_facts (id, subject, predicate, object, belief_score, salience_score, status, provenance_json, evidence_ids_json, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        belief_score = excluded.belief_score,
+                        salience_score = excluded.salience_score,
+                        status = excluded.status,
+                        evidence_ids_json = excluded.evidence_ids_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        fact.id,
+                        fact.subject,
+                        fact.predicate,
+                        fact.object,
+                        fact.belief_score,
+                        fact.salience_score,
+                        fact.status,
+                        json.dumps(fact.provenance),
+                        json.dumps(fact.evidence_ids),
+                        format_iso8601(fact.created_at),
+                        format_iso8601(fact.updated_at),
+                    ),
+                )
+            return fact
+        finally:
+            conn.close()
+
+    def retract_observation(self, observation_id: str) -> List[str]:
+        """
+        Performs cascading truth retraction across the provenance graph when an observation is invalidated.
+        Returns list of retracted entity/commitment IDs.
+        """
+        retracted_ids: List[str] = [observation_id]
+        conn = self.db_manager.get_connection()
+        try:
+            with conn:
+                # Mark observation/event as retracted or confidence=0
+                conn.execute(
+                    "UPDATE event_log SET confidence = 0.0 WHERE id = ? OR source_id = ?",
+                    (observation_id, observation_id),
+                )
+                # Retract probabilistic facts linked to this evidence ID
+                rows = conn.execute("SELECT * FROM probabilistic_facts WHERE status='active'").fetchall()
+                for r in rows:
+                    d = dict(r)
+                    ev_ids = json.loads(d.get("evidence_ids_json", "[]"))
+                    if observation_id in ev_ids:
+                        fact_id = d["id"]
+                        conn.execute(
+                            "UPDATE probabilistic_facts SET status='retracted', belief_score=0.0 WHERE id=?",
+                            (fact_id,),
+                        )
+                        retracted_ids.append(fact_id)
+            return retracted_ids
+        finally:
+            conn.close()
+
+    def simulate_counterfactual(
+        self,
+        hypothetical_events: List[Event],
+        scenario_description: str = "Counterfactual Scenario",
+    ) -> SimulationResult:
+        """
+        Executes a counterfactual 'what-if' simulation on a snapshot of the current world model.
+        """
+        base_snapshot = self.get_snapshot()
+        return self.simulator.simulate_hypothetical_scenario(
+            base_snapshot=base_snapshot,
+            hypothetical_events=hypothetical_events,
+            scenario_description=scenario_description,
+        )
+
+    def apply_memory_salience_decay(self, elapsed_days: float = 1.0) -> int:
+        """
+        Applies Ebbinghaus memory decay to all stored probabilistic facts.
+        Returns count of decayed facts.
+        """
+        conn = self.db_manager.get_connection()
+        try:
+            decayed_count = 0
+            with conn:
+                rows = conn.execute("SELECT * FROM probabilistic_facts WHERE status='active'").fetchall()
+                for r in rows:
+                    fact = ProbabilisticFact.from_dict(dict(r))
+                    fact.apply_decay(elapsed_days=elapsed_days)
+                    conn.execute(
+                        "UPDATE probabilistic_facts SET salience_score=?, updated_at=? WHERE id=?",
+                        (fact.salience_score, format_iso8601(datetime.now(timezone.utc)), fact.id),
+                    )
+                    decayed_count += 1
+            return decayed_count
+        finally:
+            conn.close()

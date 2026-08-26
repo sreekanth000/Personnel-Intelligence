@@ -140,6 +140,16 @@ class DatabaseManager:
                 if "created_at" not in columns:
                     cursor.execute("DROP TABLE reasoning_episodes;")
 
+            # Check if goals table has parent_goal_id and sub_goal_ids_json
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='goals';")
+            if cursor.fetchone():
+                cursor.execute("PRAGMA table_info(goals);")
+                columns = {row["name"] for row in cursor.fetchall()}
+                if "parent_goal_id" not in columns:
+                    cursor.execute("ALTER TABLE goals ADD COLUMN parent_goal_id TEXT;")
+                if "sub_goal_ids_json" not in columns:
+                    cursor.execute("ALTER TABLE goals ADD COLUMN sub_goal_ids_json TEXT DEFAULT '[]';")
+
             # Check if situations table has next_evaluation_at
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='situations';")
             if cursor.fetchone():

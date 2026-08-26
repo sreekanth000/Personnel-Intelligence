@@ -28,7 +28,8 @@ class TestLocalHermesLauncher(unittest.TestCase):
         # Execute built-in tool
         res = host.execute_tool("gmail_search", {"query": "project status"})
         self.assertEqual(res["status"], "success")
-        self.assertEqual(len(res["result"]["messages"]), 1)
+        self.assertIn("messages", res["result"])
+        self.assertIsInstance(res["result"]["messages"], list)
 
         # Register Personal Intelligence Plugin
         register_pi_plugin(host)

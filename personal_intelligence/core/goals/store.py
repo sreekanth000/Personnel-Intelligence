@@ -4,6 +4,7 @@ Goals provide situational context for reasoning (NOT workflow or task planning e
 """
 
 from datetime import datetime, timezone
+import json
 import sqlite3
 from typing import List, Optional, Union
 import uuid
@@ -34,12 +35,22 @@ class GoalStore:
 
     def _row_to_goal(self, row: sqlite3.Row) -> Goal:
         """Converts an SQLite row into a validated Goal object."""
+        row_keys = row.keys() if hasattr(row, "keys") else []
+        parent_id = row["parent_goal_id"] if "parent_goal_id" in row_keys else None
+        sub_ids_str = row["sub_goal_ids_json"] if "sub_goal_ids_json" in row_keys else "[]"
+        try:
+            sub_ids = json.loads(sub_ids_str) if sub_ids_str else []
+        except Exception:
+            sub_ids = []
+
         return Goal(
             id=row["id"],
             name=row["name"],
             description=row["description"] or "",
             priority=row["priority"],
             status=row["status"],
+            parent_goal_id=parent_id,
+            sub_goal_ids=sub_ids,
             created_at=ensure_timezone_aware(row["created_at"], "created_at"),
             updated_at=ensure_timezone_aware(row["updated_at"], "updated_at"),
         )
@@ -68,8 +79,8 @@ class GoalStore:
             )
 
         query = """
-            INSERT INTO goals (id, name, description, priority, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?);
+            INSERT INTO goals (id, name, description, priority, status, parent_goal_id, sub_goal_ids_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         params = (
             goal.id,
@@ -77,6 +88,8 @@ class GoalStore:
             goal.description,
             goal.priority,
             goal.status,
+            goal.parent_goal_id,
+            json.dumps(goal.sub_goal_ids),
             format_iso8601(goal.created_at),
             format_iso8601(goal.updated_at),
         )
