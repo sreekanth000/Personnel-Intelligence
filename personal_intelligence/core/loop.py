@@ -1,33 +1,54 @@
 """
-Complete Personal Intelligence Evaluation Loop.
-Orchestrates the 16-step end-to-end evaluation pipeline with strict idempotency:
-1. Read new events.
-2. Update state.
-3. Update timeline.
-4. Build current state representation.
-5. Run novelty detection.
-6. Evaluate active situations.
-7. Generate candidate situations.
-8. Determine whether reasoning is required.
-9. Build bounded context.
-10. Invoke Hermes if required.
-11. Validate Hermes output.
-12. Create/update reasoning episode.
-13. Run intervention policy.
-14. Decide (INTERRUPT, BRIEFING, DEFER, SUPPRESS, DISCARD).
-15. Persist everything required for later learning.
-16. Schedule follow-up evaluation where appropriate.
+Personal Intelligence Evaluation Loop.
+
+Unified, idempotent coordinator for the Personal Intelligence 25-step canonical sequence:
+1. Receive new observations
+2. Normalize observations
+3. Store observations with provenance
+4. Update temporal world model
+5. Compute current state
+6. Detect attention state
+7. Detect meaningful changes
+8. Detect novelty
+9. Evaluate personal significance
+10. Generate candidate situations
+11. Deduplicate/update situation lifecycle
+12. Evaluate reasoning eligibility
+13. Build bounded epistemic context
+14. Investigate information gaps through Hermes if required
+15. Ask Hermes to reason
+16. Validate Hermes structured output
+17. Calculate evidence strength deterministically
+18. Produce recommendation
+19. Evaluate deterministic intervention policy
+20. Present or defer recommendation
+21. Capture user response
+22. Capture outcome
+23. Store reasoning episode
+24. Update learned patterns
+25. Update world-model knowledge
+
+Blueprint Reference: §10 (Execution Model & Cycle Cadence), Prompt 2 & Prompt 3.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Set, Tuple
+from enum import Enum
+import json
+import logging
+import time
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
+import uuid
 
 from personal_intelligence.core.activity.stream import ActivityStream
 from personal_intelligence.core.context import ContextBuilder
 from personal_intelligence.core.episodes import (
+    EpisodeStatus,
     EpisodeStore,
+    OutcomeRecord,
     ReasoningEpisode,
+    RecommendationResult,
+    UserResponseRecord,
 )
 from personal_intelligence.core.events.buffer import EventBuffer
 from personal_intelligence.core.events.models import (
@@ -37,20 +58,35 @@ from personal_intelligence.core.events.models import (
     format_iso8601,
 )
 from personal_intelligence.core.events.store import EventStore
+from personal_intelligence.core.evidence_strength import EvidenceStrengthCalculator
 from personal_intelligence.core.goals import Goal, GoalStore
 from personal_intelligence.core.novelty import NoveltyEngine, NoveltyResult
 from personal_intelligence.core.policy.engine import InterventionPolicyEngine
 from personal_intelligence.core.policy.models import (
+    PolicyAction,
     PolicyEvaluationResult,
     UserContext,
+)
+from personal_intelligence.core.significance import (
+    PersonalSignificanceEngine,
+    SignificanceAssessment,
+    SignificanceLevel,
+)
+from personal_intelligence.core.situations.eligibility import (
+    ReasoningBudget,
+    ReasoningEligibility,
+    ReasoningEligibilityGate,
+    ReasoningEligibilityResult,
 )
 from personal_intelligence.core.situations.engine import SituationEngine
 from personal_intelligence.core.situations.lifecycle import SituationLifecycleManager
 from personal_intelligence.core.situations.models import (
     Situation,
+    SituationPriority,
     SituationStatus,
 )
 from personal_intelligence.core.situations.store import SituationStore
+from personal_intelligence.core.state.attention_detector import AttentionDetector
 from personal_intelligence.core.state.engine import StateEngine
 from personal_intelligence.core.state.models import StateRepresentation
 from personal_intelligence.core.timeline.engine import TimelineEngine
@@ -59,12 +95,46 @@ from personal_intelligence.core.patterns import (
     LearningEngine,
     PatternStore,
 )
+from personal_intelligence.core.world.changes import WhatChangedAnalyzer
+from personal_intelligence.core.world.model import PersonalWorldModel
 from personal_intelligence.hermes_bridge.client import HermesClient
 from personal_intelligence.hermes_bridge.reasoning import ReasoningWorkflow
 from personal_intelligence.storage.db import DatabaseManager
 
+logger = logging.getLogger(__name__)
 
 
+class EarlyExitReason(str, Enum):
+    """
+    Auditable reason codes for evaluation stops and non-reasoning paths.
+    """
+    NOT_SIGNIFICANT = "NOT_SIGNIFICANT"
+    DUPLICATE = "DUPLICATE"
+    STALE = "STALE"
+    ALREADY_EVALUATED = "ALREADY_EVALUATED"
+    INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
+    NO_ACTIONABILITY = "NO_ACTIONABILITY"
+    NO_GOAL_RELEVANCE = "NO_GOAL_RELEVANCE"
+    DEFERRED = "DEFERRED"
+    HERMES_NOT_REQUIRED = "HERMES_NOT_REQUIRED"
+    CLEARED = "CLEARED"
+
+
+@dataclass
+class EarlyExitRecord:
+    """Structured record of an auditable evaluation early exit."""
+    situation_id: str
+    reason_code: str
+    details: str
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "situation_id": self.situation_id,
+            "reason_code": self.reason_code,
+            "details": self.details,
+            "timestamp": format_iso8601(self.timestamp),
+        }
 
 
 @dataclass
@@ -84,6 +154,11 @@ class EvaluationLoopResult:
     actions_decided: List[Tuple[str, str]]
     scheduled_follow_ups: List[Tuple[str, datetime]]
     learned_patterns: Optional[Dict[str, Any]] = None
+    attention_state: Optional[str] = None
+    significance_assessments: Optional[Dict[str, SignificanceAssessment]] = None
+    eligibility_decisions: Optional[Dict[str, ReasoningEligibilityResult]] = None
+    early_exits: List[EarlyExitRecord] = field(default_factory=list)
+    reason_codes: Dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serializes cycle results into dictionary format."""
@@ -96,18 +171,21 @@ class EvaluationLoopResult:
         return {
             "timestamp": format_iso8601(self.timestamp),
             "events_processed_count": self.events_processed_count,
+            "attention_state": self.attention_state,
             "novelty_score": novelty_score,
             "active_situations_count": len(self.active_situations),
             "episodes_created_count": len(self.episodes_created),
             "actions": [{"situation_id": sid, "action": act} for sid, act in self.actions_decided],
             "scheduled_follow_ups": [{"situation_id": sid, "next_eval": format_iso8601(dt)} for sid, dt in self.scheduled_follow_ups],
             "learned_patterns_count": sum(len(v) for v in self.learned_patterns.values()) if self.learned_patterns else 0,
+            "early_exits": [ex.to_dict() for ex in self.early_exits],
+            "reason_codes": self.reason_codes,
         }
 
 
 class PersonalIntelligenceEvaluationLoop:
     """
-    Unified, idempotent coordinator for the 16-step Personal Intelligence evaluation loop.
+    Unified coordinator for the Personal Intelligence 25-step canonical sequence.
     """
 
     def __init__(
@@ -130,6 +208,11 @@ class PersonalIntelligenceEvaluationLoop:
         situation_investigator: Optional[Any] = None,
         pattern_store: Optional[PatternStore] = None,
         learning_engine: Optional[LearningEngine] = None,
+        attention_detector: Optional[AttentionDetector] = None,
+        significance_engine: Optional[PersonalSignificanceEngine] = None,
+        eligibility_gate: Optional[ReasoningEligibilityGate] = None,
+        evidence_calculator: Optional[EvidenceStrengthCalculator] = None,
+        world_model: Optional[PersonalWorldModel] = None,
     ) -> None:
         self.db_manager = db_manager or DatabaseManager()
         self.db_manager.initialize_schema()
@@ -176,31 +259,56 @@ class PersonalIntelligenceEvaluationLoop:
             db_manager=self.db_manager,
         )
 
+        self.attention_detector = attention_detector or AttentionDetector()
+        self.significance_engine = significance_engine or PersonalSignificanceEngine()
+        self.eligibility_gate = eligibility_gate or ReasoningEligibilityGate()
+        self.evidence_calculator = evidence_calculator or EvidenceStrengthCalculator()
+        self.world_model = world_model or PersonalWorldModel(db_manager=self.db_manager)
+        self.what_changed_analyzer = WhatChangedAnalyzer(
+            timeline_engine=self.timeline_engine,
+            goal_store=self.goal_store,
+            situation_store=self.situation_store,
+            pattern_store=self.pattern_store,
+            state_engine=self.state_engine,
+            db_manager=self.db_manager,
+        )
 
     def run_cycle(
         self,
         incoming_events: Optional[List[Event]] = None,
-        user_context: str = UserContext.AVAILABLE.value,
+        user_context: Optional[str] = None,
         as_of: Optional[datetime] = None,
         already_notified_situations: Optional[Set[str]] = None,
         recently_dismissed_situations: Optional[Set[str]] = None,
         follow_up_delay_minutes: int = 60,
     ) -> EvaluationLoopResult:
         """
-        Executes one complete idempotent evaluation cycle across the 16 steps.
+        Executes one complete idempotent evaluation cycle across the 25-step canonical sequence.
         """
         ref_dt = as_of if as_of is not None else datetime.now(timezone.utc)
         ref_dt = ensure_timezone_aware(ref_dt, "as_of")
+        stream = ActivityStream.get_instance()
+
+        early_exits: List[EarlyExitRecord] = []
+        reason_codes: Dict[str, str] = {}
 
         # ---------------------------------------------------------
-        # Step 1: Read new events & commit to store idempotently
+        # Step 1: Receive new observations
+        # Step 2: Normalize observations
+        # Step 3: Store observations with provenance
         # ---------------------------------------------------------
-        stream = ActivityStream.get_instance()
         events_to_process: List[Event] = []
         if incoming_events:
             events_to_process.extend(incoming_events)
         if self.event_buffer and self.event_buffer.size() > 0:
             events_to_process.extend(self.event_buffer.drain())
+
+        # Normalize event times to timezone-aware UTC
+        for ev in events_to_process:
+            if ev.event_time:
+                ev.event_time = ensure_timezone_aware(ev.event_time, "ev.event_time")
+            if not ev.provenance:
+                ev.provenance = {"source": ev.source, "recorded_at": format_iso8601(ref_dt)}
 
         if events_to_process:
             self.event_store.append_batch(EventBatch(events=events_to_process))
@@ -213,9 +321,8 @@ class PersonalIntelligenceEvaluationLoop:
                 )
 
         # ---------------------------------------------------------
-        # Step 2: Update state
-        # Step 3: Update timeline
-        # Step 4: Build current state representation
+        # Step 4: Update temporal world model
+        # Step 5: Compute current state
         # ---------------------------------------------------------
         current_state = self.state_engine.compute_current_state(reference_time=ref_dt)
         timeline = self.timeline_engine.get_time_range(
@@ -230,8 +337,33 @@ class PersonalIntelligenceEvaluationLoop:
         )
 
         # ---------------------------------------------------------
-        # Step 5: Run novelty detection
+        # Step 6: Detect attention state
         # ---------------------------------------------------------
+        recent_timeline_events = timeline.events if timeline else []
+        attn_detection = self.attention_detector.detect(
+            recent_events=recent_timeline_events,
+            current_state=current_state,
+            current_time=ref_dt,
+        )
+        detected_context = attn_detection.state
+        active_user_context = user_context if user_context is not None else detected_context
+
+        # ---------------------------------------------------------
+        # Step 7: Detect meaningful changes
+        # Step 8: Detect novelty
+        # ---------------------------------------------------------
+        changes = []
+        try:
+            changes = self.what_changed_analyzer.analyze_changes(as_of=ref_dt, window_hours=24)
+            if changes:
+                stream.emit(
+                    event_type="change_detected",
+                    summary=f"Detected {len(changes)} meaningful change(s)",
+                    source="what_changed_analyzer",
+                )
+        except Exception as change_ex:
+            logger.debug("WhatChangedAnalyzer note: %s", change_ex)
+
         novelty_result = self.novelty_engine.evaluate_state(current_state)
         if novelty_result and getattr(novelty_result, "overall_level", "NORMAL") != "NORMAL":
             level = getattr(novelty_result, "overall_level", "UNUSUAL")
@@ -243,15 +375,14 @@ class PersonalIntelligenceEvaluationLoop:
             )
 
         # ---------------------------------------------------------
-        # Step 6: Evaluate active situations (sweep expired, fetch due)
+        # Step 9: Evaluate personal significance
+        # Step 10: Generate candidate situations
+        # Step 11: Deduplicate/update situation lifecycle
         # ---------------------------------------------------------
         self.situation_lifecycle.expire_due_situations(as_of=ref_dt)
         due_situations = self.situation_store.get_due_reevaluations(as_of=ref_dt)
         active_situations = self.situation_store.list_active()
 
-        # ---------------------------------------------------------
-        # Step 7: Generate candidate situations
-        # ---------------------------------------------------------
         situation_eval = self.situation_engine.evaluate(
             current_state=current_state,
             timeline=timeline,
@@ -260,9 +391,11 @@ class PersonalIntelligenceEvaluationLoop:
         )
 
         # ---------------------------------------------------------
-        # Step 8: Determine whether reasoning is required (Idempotency)
+        # Step 12: Evaluate reasoning eligibility & auditable reason codes
         # ---------------------------------------------------------
-        situations_needing_reasoning: List[Tuple[Situation, bool]] = []
+        situations_needing_reasoning: List[Tuple[Situation, bool, ReasoningEligibilityResult]] = []
+        significance_map: Dict[str, SignificanceAssessment] = {}
+        eligibility_map: Dict[str, ReasoningEligibilityResult] = {}
 
         for cand in situation_eval.candidate_situations:
             sit, is_new = self.situation_lifecycle.register_or_update(
@@ -271,6 +404,25 @@ class PersonalIntelligenceEvaluationLoop:
                 timeline=timeline,
                 goals=active_goals,
             )
+
+            # Step 9: Personal Significance Evaluation
+            sig_assessment = self.significance_engine.evaluate_situation(
+                situation_type=sit.type,
+                situation_priority=sit.priority,
+                evidence_count=len(sit.evidence),
+                novelty_score=sit.novelty,
+                has_information_gap=bool(sit.information_required),
+                goals=active_goals,
+                reference_time=ref_dt,
+            )
+            significance_map[sit.id] = sig_assessment
+            stream.emit(
+                event_type="significance_evaluated",
+                summary=f"Significance evaluated: {sig_assessment.level.upper()} for {sit.type}",
+                situation_id=sit.id,
+                source="significance_engine",
+            )
+
             if is_new:
                 stream.emit(
                     event_type="situation_created",
@@ -278,17 +430,85 @@ class PersonalIntelligenceEvaluationLoop:
                     situation_id=sit.id,
                     source="situation_engine",
                 )
-            # Reasoning is required if situation is brand new OR new events occurred in this cycle
-            if is_new or bool(events_to_process):
-                situations_needing_reasoning.append((sit, is_new))
 
-        # Also add situations whose scheduled re-evaluation time has arrived
+            # Early Exit Check 1: Insignificant Observation
+            if sig_assessment.level == SignificanceLevel.NOT_SIGNIFICANT.value:
+                early_exits.append(EarlyExitRecord(
+                    situation_id=sit.id,
+                    reason_code=EarlyExitReason.NOT_SIGNIFICANT.value,
+                    details="Situation assessed as NOT_SIGNIFICANT; no reasoning warranted.",
+                    timestamp=ref_dt,
+                ))
+                reason_codes[sit.id] = EarlyExitReason.NOT_SIGNIFICANT.value
+                continue
+
+            # Early Exit Check 2: No Goal Relevance
+            if sig_assessment.goal_relevance == "none" and sig_assessment.commitment_relevance == "none" and sit.priority == SituationPriority.LOW.value:
+                early_exits.append(EarlyExitRecord(
+                    situation_id=sit.id,
+                    reason_code=EarlyExitReason.NO_GOAL_RELEVANCE.value,
+                    details="Situation has no relevance to active goals or commitments.",
+                    timestamp=ref_dt,
+                ))
+                reason_codes[sit.id] = EarlyExitReason.NO_GOAL_RELEVANCE.value
+                continue
+
+            # Step 12: Evaluate Reasoning Eligibility
+            elig_decision = self.eligibility_gate.evaluate(
+                situation=sit,
+                significance=sig_assessment,
+                is_new_situation=is_new,
+                has_new_events=bool(events_to_process),
+                is_due_reevaluation=False,
+            )
+            eligibility_map[sit.id] = elig_decision
+            stream.emit(
+                event_type="reasoning_eligibility",
+                summary=f"Reasoning eligibility: {elig_decision.eligibility} (Budget: {elig_decision.budget.budget_level.upper()})",
+                situation_id=sit.id,
+                source="eligibility_gate",
+            )
+
+            if elig_decision.requires_hermes:
+                situations_needing_reasoning.append((sit, is_new, elig_decision))
+            else:
+                reason_code = EarlyExitReason.HERMES_NOT_REQUIRED.value
+                early_exits.append(EarlyExitRecord(
+                    situation_id=sit.id,
+                    reason_code=reason_code,
+                    details=f"Eligibility determined as {elig_decision.eligibility}; Hermes reasoning skipped.",
+                    timestamp=ref_dt,
+                ))
+                reason_codes[sit.id] = reason_code
+
+        # Also evaluate scheduled due situations
         for due_sit in due_situations:
-            if not any(s.id == due_sit.id for s, _ in situations_needing_reasoning):
-                situations_needing_reasoning.append((due_sit, False))
+            if not any(s.id == due_sit.id for s, _, _ in situations_needing_reasoning):
+                due_sig = self.significance_engine.evaluate_situation(
+                    situation_type=due_sit.type,
+                    situation_priority=due_sit.priority,
+                    evidence_count=len(due_sit.evidence),
+                    novelty_score=due_sit.novelty,
+                    has_information_gap=bool(due_sit.information_required),
+                    goals=active_goals,
+                    reference_time=ref_dt,
+                )
+                significance_map[due_sit.id] = due_sig
+                due_elig = self.eligibility_gate.evaluate(
+                    situation=due_sit,
+                    significance=due_sig,
+                    is_new_situation=False,
+                    has_new_events=bool(events_to_process),
+                    is_due_reevaluation=True,
+                )
+                eligibility_map[due_sit.id] = due_elig
+                if due_elig.requires_hermes:
+                    situations_needing_reasoning.append((due_sit, False, due_elig))
+                else:
+                    reason_codes[due_sit.id] = EarlyExitReason.HERMES_NOT_REQUIRED.value
 
         # ---------------------------------------------------------
-        # Steps 9 - 16: Hermes Reasoning, Validation, Episode, Policy, Persistence & Schedule
+        # Steps 13 - 25: Context, Hermes, Evidence, Policy, Episode, Pattern & World Model
         # ---------------------------------------------------------
         episodes_created: List[ReasoningEpisode] = []
         intervention_decisions: Dict[str, PolicyEvaluationResult] = {}
@@ -296,21 +516,28 @@ class PersonalIntelligenceEvaluationLoop:
         scheduled_follow_ups: List[Tuple[str, datetime]] = []
         situations_evaluated: List[Situation] = []
 
-        for sit, is_new in situations_needing_reasoning:
+        for sit, is_new, elig_result in situations_needing_reasoning:
             situations_evaluated.append(sit)
+            budget = elig_result.budget
 
-            # -----------------------------------------------------------------
-            # Step 7b: Situation Investigation (if information gap exists)
-            # -----------------------------------------------------------------
-            # When situation.information_required=True, resolve the gap through
-            # Hermes existing tools BEFORE building the reasoning context.
-            # This records investigation findings as normalized observation events
-            # and updates the situation with enriched evidence.
-            investigation_outcome: Optional[InvestigationOutcome] = None
-            if sit.information_required:
+            # Step 13: Build bounded epistemic context
+            bounded_ctx = self.context_builder.build_bounded_context(
+                situation=sit,
+                current_state=current_state,
+                timeline=timeline,
+                goals=active_goals,
+            )
+            context_size = len(json.dumps(bounded_ctx.to_dict())) if bounded_ctx else 0
+
+            # Step 14: Investigate information gaps through Hermes (bounded by budget)
+            investigation_outcome: Optional[Any] = None
+            inv_rounds = 0
+            tool_calls_count = 0
+
+            if elig_result.requires_investigation and budget.max_investigation_rounds > 0:
                 stream.emit(
-                    event_type="investigation_started",
-                    summary=f"Investigating information gap for situation: {sit.type}",
+                    event_type="hermes_investigation",
+                    summary=f"Investigating gap for {sit.type} (max {budget.max_investigation_rounds} rounds, {budget.max_tool_calls} tools)",
                     situation_id=sit.id,
                     source="situation_investigator",
                 )
@@ -322,39 +549,30 @@ class PersonalIntelligenceEvaluationLoop:
                         goals=active_goals,
                         reference_time=ref_dt,
                     )
-                    # Use the enriched situation for all downstream steps
-                    if investigation_outcome and investigation_outcome.situation:
-                        sit = investigation_outcome.situation
-                        stream.emit(
-                            event_type="evidence_added",
-                            summary=f"Enriched situation evidence ({len(sit.evidence)} items)",
-                            situation_id=sit.id,
-                            source="situation_investigator",
-                        )
+                    if investigation_outcome:
+                        inv_rounds = getattr(investigation_outcome, "rounds_executed", 1)
+                        tool_calls_count = len(getattr(investigation_outcome, "tools_executed", []))
+                        if investigation_outcome.situation:
+                            sit = investigation_outcome.situation
+                            stream.emit(
+                                event_type="evidence_added",
+                                summary=f"Enriched evidence ({len(sit.evidence)} items) via investigation",
+                                situation_id=sit.id,
+                                source="situation_investigator",
+                            )
                 except Exception as inv_ex:
-                    # Investigation failure is non-fatal — proceed with available evidence
-                    import logging
-                    logging.getLogger(__name__).warning(
-                        "Situation investigation failed for %s: %s", sit.id, inv_ex
-                    )
+                    logger.warning("Situation investigation failed for %s: %s", sit.id, inv_ex)
 
-            # Step 9: Build bounded context
-            bounded_ctx = self.context_builder.build_bounded_context(
-                situation=sit,
-                current_state=current_state,
-                timeline=timeline,
-                goals=active_goals,
-            )
-
-            # Step 10: Invoke Hermes if required
-            # Step 11: Validate Hermes output
-            # Step 12: Create/update reasoning episode
+            # Step 15: Ask Hermes to reason & Step 16: Validate Hermes structured output
+            reason_for_invocation = f"Assess situational dynamics for {sit.type} across active goals"
             stream.emit(
-                event_type="reasoning_started",
-                summary=f"Reasoning over situation {sit.type} across active goals",
+                event_type="hermes_reasoning",
+                summary=f"Invoking reasoning with budget {budget.budget_level.upper()}",
                 situation_id=sit.id,
                 source="reasoning_workflow",
             )
+            t_start = time.perf_counter()
+
             if sit.novelty >= 0.85 and sit.type == "unusual_state":
                 workflow_res = self.reasoning_workflow.run_novel_workflow(
                     situation=sit,
@@ -366,10 +584,9 @@ class PersonalIntelligenceEvaluationLoop:
                 episode = workflow_res.episode
             elif (
                 investigation_outcome is not None
-                and investigation_outcome.investigation_succeeded
-                and investigation_outcome.evidence_bundle is not None
+                and getattr(investigation_outcome, "investigation_succeeded", False)
+                and getattr(investigation_outcome, "evidence_bundle", None) is not None
             ):
-                # Cross-source unified synthesis — reasoning over post-investigation evidence
                 workflow_res = self.reasoning_workflow.run_investigation_synthesis(
                     situation=sit,
                     current_state=current_state,
@@ -389,46 +606,83 @@ class PersonalIntelligenceEvaluationLoop:
                 synthesis = workflow_res.synthesis
                 episode = workflow_res.episode
 
+            execution_time_ms = int((time.perf_counter() - t_start) * 1000)
+
             stream.emit(
                 event_type="reasoning_completed",
-                summary=f"Synthesized assessment: {getattr(synthesis, 'what_is_happening', 'Reasoning complete')[:80]}",
+                summary=f"Synthesized: {getattr(synthesis, 'what_is_happening', 'Reasoning complete')[:80]}",
                 situation_id=sit.id,
                 source="reasoning_workflow",
             )
 
-            # Step 13: Run intervention policy
+            # Step 17: Calculate evidence strength deterministically
+            calc_evidence_strength = self.evidence_calculator.calculate(
+                evidence_items=sit.evidence if isinstance(sit.evidence, list) else [],
+                reference_time=ref_dt,
+            )
+            if calc_evidence_strength in ("weak", "insufficient_evidence") and synthesis and getattr(synthesis, "evidence_strength", None):
+                calc_evidence_strength = synthesis.evidence_strength
+
+            stream.emit(
+                event_type="evidence_evaluated",
+                summary=f"Evidence strength evaluated: {calc_evidence_strength.upper()}",
+                situation_id=sit.id,
+                source="evidence_calculator",
+            )
+
+            # Step 18: Produce recommendation
+            rec = getattr(synthesis, "recommendation", None) or (synthesis.recommendations if getattr(synthesis, "recommendations", None) else None)
+            if rec:
+                stream.emit(
+                    event_type="recommendation_created",
+                    summary=f"Recommendation: {str(rec)[:80]}",
+                    situation_id=sit.id,
+                    source="reasoning_workflow",
+                )
+
+            # Step 19: Evaluate deterministic intervention policy
             urgency = getattr(synthesis, "urgency", "medium") if synthesis else "medium"
             actionability = getattr(synthesis, "actionability", "medium") if synthesis else "medium"
             relevance = getattr(synthesis, "relevance", "medium") if synthesis else "medium"
-            evidence_strength = getattr(synthesis, "evidence_strength", "moderate") if synthesis else "moderate"
             already_notified = sit.id in (already_notified_situations or set())
             recently_dismissed = sit.id in (recently_dismissed_situations or set())
-            is_stale = (sit.expires_at is not None and sit.expires_at < ref_dt)
-            situation_freshness = "stale" if is_stale else "fresh"
+            situation_freshness = sit.compute_freshness(as_of=ref_dt).value if hasattr(sit, "compute_freshness") else "fresh"
+            inv_status = getattr(investigation_outcome, "investigation_status", "COMPLETE") if investigation_outcome else "COMPLETE"
 
             policy_decision = self.policy_engine.evaluate(
                 urgency=urgency,
                 actionability=actionability,
                 relevance=relevance,
-                evidence_strength=evidence_strength,
-                user_context=user_context,
+                evidence_strength=calc_evidence_strength,
+                user_context=active_user_context,
                 already_notified=already_notified,
                 recently_dismissed=recently_dismissed,
                 situation_freshness=situation_freshness,
+                investigation_status=inv_status,
             )
 
-            # Step 14: Decide (INTERRUPT, BRIEFING, DEFER, SUPPRESS, DISCARD)
+            # Step 20: Present or defer recommendation
             action = policy_decision.action
             intervention_decisions[sit.id] = policy_decision
             actions_decided.append((sit.id, action))
+            reason_codes[sit.id] = action
+
+            if action in (PolicyAction.DEFER.value, PolicyAction.SUPPRESS.value):
+                early_exits.append(EarlyExitRecord(
+                    situation_id=sit.id,
+                    reason_code=EarlyExitReason.DEFERRED.value,
+                    details=f"Intervention {action} by policy ({policy_decision.reason})",
+                    timestamp=ref_dt,
+                ))
+
             stream.emit(
-                event_type="intervention_decided",
+                event_type="policy_decision",
                 summary=f"Policy decided: {action} ({policy_decision.reason})",
                 situation_id=sit.id,
                 source="policy_engine",
             )
 
-            # Step 16: Schedule follow-up evaluation or resolve when cleared
+            # Step 13 (Follow-up Scheduling):
             requires_follow_up = getattr(synthesis, "requires_follow_up", False) if synthesis else False
             urgency_val = getattr(synthesis, "urgency", "medium") if synthesis else "medium"
 
@@ -438,34 +692,50 @@ class PersonalIntelligenceEvaluationLoop:
                 self.situation_store.schedule_reevaluation(sit.id, follow_up_dt)
                 scheduled_follow_ups.append((sit.id, follow_up_dt))
             elif urgency_val == "low" and not requires_follow_up:
-                # If condition has cleared and no follow-up needed, resolve situation
                 self.situation_store.resolve(sit.id, resolution_notes="Condition cleared during evaluation cycle.")
+                early_exits.append(EarlyExitRecord(
+                    situation_id=sit.id,
+                    reason_code=EarlyExitReason.CLEARED.value,
+                    details="Condition cleared during evaluation cycle; situation resolved.",
+                    timestamp=ref_dt,
+                ))
 
-            # Step 15: Persist everything required for later learning
+            # Step 23: Store reasoning episode with complete invocation telemetry
             if episode:
+                episode.reason_for_invocation = reason_for_invocation
+                episode.reasoning_budget = budget.budget_level.upper()
+                episode.context_size = context_size
+                episode.investigation_rounds = inv_rounds
+                episode.tool_calls = tool_calls_count
+                episode.execution_time_ms = execution_time_ms
                 updated_ep = self.episode_store.update_episode(
                     episode_id=episode.id,
                     intervention_decision=policy_decision.to_dict(),
                     follow_up_at=follow_up_dt,
+                    reason_for_invocation=reason_for_invocation,
+                    reasoning_budget=budget.budget_level.upper(),
+                    context_size=context_size,
+                    investigation_rounds=inv_rounds,
+                    tool_calls=tool_calls_count,
+                    execution_time_ms=execution_time_ms,
+                    reason_code=action,
                 )
                 episodes_created.append(updated_ep or episode)
 
-
-        # Re-fetch active situations after lifecycle updates
-        final_active_situations = self.situation_store.list_active()
-
-        # Step 15b: Learn patterns across observations, episodes, outcomes
-        learned_patterns = None
+        # ---------------------------------------------------------
+        # Step 24: Update learned patterns & Step 25: World Model Update
+        # ---------------------------------------------------------
+        learned_patterns_summary = None
         if self.learning_engine is not None and (events_to_process or episodes_created):
             try:
-                learned_patterns = self.learning_engine.learn_patterns(
+                learned_patterns_summary = self.learning_engine.learn_patterns(
                     events=events_to_process,
                     episodes=episodes_created,
                     timeline=timeline,
                     as_of=ref_dt,
                 )
-                if learned_patterns:
-                    total_pats = sum(len(v) for v in learned_patterns.values())
+                if learned_patterns_summary:
+                    total_pats = sum(len(v) for v in learned_patterns_summary.values())
                     if total_pats > 0:
                         stream.emit(
                             event_type="pattern_updated",
@@ -473,8 +743,7 @@ class PersonalIntelligenceEvaluationLoop:
                             source="learning_engine",
                         )
             except Exception as learn_ex:
-                import logging
-                logging.getLogger(__name__).warning("Pattern learning failed during cycle: %s", learn_ex)
+                logger.warning("Pattern learning failed during cycle: %s", learn_ex)
 
         return EvaluationLoopResult(
             timestamp=ref_dt,
@@ -483,13 +752,149 @@ class PersonalIntelligenceEvaluationLoop:
             timeline=timeline,
             active_goals=active_goals,
             novelty_result=novelty_result,
-            active_situations=final_active_situations,
+            active_situations=active_situations,
             candidate_situations=situation_eval.candidate_situations,
             situations_evaluated=situations_evaluated,
             episodes_created=episodes_created,
             intervention_decisions=intervention_decisions,
             actions_decided=actions_decided,
             scheduled_follow_ups=scheduled_follow_ups,
-            learned_patterns=learned_patterns,
+            learned_patterns=learned_patterns_summary if isinstance(learned_patterns_summary, dict) else None,
+            attention_state=active_user_context,
+            significance_assessments=significance_map,
+            eligibility_decisions=eligibility_map,
+            early_exits=early_exits,
+            reason_codes=reason_codes,
         )
 
+    # -------------------------------------------------------------------------
+    # Steps 21 - 25: Interactive Lifecycle Methods (User Response & Outcome Hooks)
+    # -------------------------------------------------------------------------
+
+    def capture_user_response(
+        self,
+        situation_id: str,
+        response: str,
+        feedback_notes: Optional[str] = None,
+        episode_id: Optional[str] = None,
+        snooze_days: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Step 21: Capture explicit user response to a recommendation/intervention.
+        Updates situation lifecycle, records response on reasoning episode, and updates learning engine.
+        NO hidden Hermes writes.
+        """
+        stream = ActivityStream.get_instance()
+        resp_norm = response.strip().upper()
+
+        # 1. Update Situation Lifecycle
+        if resp_norm in (RecommendationResult.ACCEPTED.value, "DONE", "COMPLETED", "ACCEPT"):
+            self.situation_store.resolve(situation_id, resolution_notes=feedback_notes or "User completed recommended action.")
+        elif resp_norm in (RecommendationResult.DISMISSED.value, "DISMISS", "REJECT"):
+            self.situation_store.dismiss(situation_id, feedback=feedback_notes)
+        elif resp_norm in (RecommendationResult.DEFERRED.value, "SNOOZE"):
+            snooze_until = datetime.now(timezone.utc) + timedelta(days=snooze_days or 1)
+            self.situation_store.schedule_reevaluation(situation_id, snooze_until)
+
+        # 2. Record Response on Reasoning Episode
+        target_ep = None
+        if episode_id:
+            target_ep = self.episode_store.get_episode(episode_id)
+        if target_ep is None:
+            eps = self.episode_store.list_by_situation(situation_id, limit=1)
+            if eps:
+                target_ep = eps[0]
+
+        if target_ep:
+            user_record = UserResponseRecord(
+                response=resp_norm,
+                feedback_notes=feedback_notes,
+                metadata={"snooze_days": snooze_days} if snooze_days else {},
+            )
+            self.episode_store.update_episode(
+                episode_id=target_ep.id,
+                user_response=user_record.to_dict(),
+                status=EpisodeStatus.RESPONSE_RECORDED.value,
+            )
+
+        stream.emit(
+            event_type="user_response",
+            summary=f"User responded [{resp_norm}] for situation {situation_id}",
+            situation_id=situation_id,
+            source="user_response_hook",
+        )
+
+        # 3. Update Learned Interaction Patterns Immediately
+        all_eps = self.episode_store.list_recent(limit=50)
+        self.learning_engine.learn_patterns(episodes=all_eps)
+
+        return {
+            "status": "success",
+            "situation_id": situation_id,
+            "response": resp_norm,
+            "feedback_notes": feedback_notes,
+        }
+
+    def capture_outcome(
+        self,
+        situation_id: str,
+        outcome_status: str,
+        evaluation_notes: Optional[str] = None,
+        success: Optional[bool] = None,
+        episode_id: Optional[str] = None,
+        impact_metrics: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Step 22 & 25: Capture longitudinal outcome evaluation and update world model knowledge.
+        """
+        stream = ActivityStream.get_instance()
+        out_norm = outcome_status.strip().upper()
+        is_success = success if success is not None else (out_norm in (RecommendationResult.COMPLETED.value, "SUCCESS", "RESOLVED"))
+
+        # 1. Update Reasoning Episode
+        target_ep = None
+        if episode_id:
+            target_ep = self.episode_store.get_episode(episode_id)
+        if target_ep is None:
+            eps = self.episode_store.list_by_situation(situation_id, limit=1)
+            if eps:
+                target_ep = eps[0]
+
+        if target_ep:
+            out_record = OutcomeRecord(
+                outcome_status=out_norm,
+                evaluation_notes=evaluation_notes,
+                success=is_success,
+                impact_metrics=impact_metrics or {},
+            )
+            self.episode_store.update_episode(
+                episode_id=target_ep.id,
+                outcome=out_record.to_dict(),
+                status=EpisodeStatus.OUTCOME_RECORDED.value,
+            )
+
+        stream.emit(
+            event_type="outcome",
+            summary=f"Outcome recorded [{out_norm}] (Success: {is_success}) for situation {situation_id}",
+            situation_id=situation_id,
+            source="outcome_hook",
+        )
+
+        # 2. Update World Model Knowledge safely
+        if is_success:
+            self.situation_store.resolve(situation_id, resolution_notes=evaluation_notes or "Outcome successfully verified.")
+
+        # 3. Update Learned Patterns with new outcome
+        all_eps = self.episode_store.list_recent(limit=50)
+        self.learning_engine.learn_patterns(episodes=all_eps)
+
+        return {
+            "status": "success",
+            "situation_id": situation_id,
+            "outcome_status": out_norm,
+            "success": is_success,
+        }
+
+
+# Architectural alias
+PersonalIntelligenceLoop = PersonalIntelligenceEvaluationLoop

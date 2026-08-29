@@ -172,9 +172,9 @@ class TestDemoUIAPIPi(unittest.TestCase):
     # -------------------------------------------------------------------------
     def test_screen_patterns_endpoint(self) -> None:
         data = self._get_json("/api/pi/patterns")
-        self.assertIsInstance(data, list)
-        self.assertGreaterEqual(len(data), 1)
-        pat = data[0]
+        patterns_list = data if isinstance(data, list) else data.get("patterns", [])
+        self.assertGreaterEqual(len(patterns_list), 1)
+        pat = patterns_list[0]
         self.assertIn("description", pat)
         self.assertIn("support_count", pat)
         self.assertIn("confidence_ratio", pat)

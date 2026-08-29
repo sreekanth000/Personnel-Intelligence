@@ -368,13 +368,18 @@ class HermesRuntimeBridge:
     # -------------------------------------------------------------------------
     # Tool Execution
     # -------------------------------------------------------------------------
-    def execute_tool(self, tool_name: str, tool_args: Optional[Dict[str, Any]] = None) -> Any:
+    def execute_tool(
+        self,
+        tool_name: str,
+        tool_args: Optional[Dict[str, Any]] = None,
+        user_approved: bool = False,
+    ) -> Any:
         """
         Executes an existing Hermes native tool (Workspace, Meet, Filesystem, Browser)
         through the host runtime context without duplicating API clients.
         
         Guarantees:
-        - Strict OperationSafetyGuard (read-only external access; blocks autonomous write operations).
+        - Strict OperationSafetyGuard (read-only external access; blocks autonomous write operations unless user-approved).
         - In LIVE mode: Fails with typed errors when runtime context, tool, or authentication is missing.
         - In DEMO mode: Returns fixture data visibly labelled [DEMO].
         - In TEST mode: Executes tool overrides or mocked context.
@@ -382,9 +387,13 @@ class HermesRuntimeBridge:
         args = tool_args or {}
         diag = self._sanitize_diagnostics(tool_name, args)
 
-        # 1. Enforce operation safety policy (read-only and no autonomous write operations)
+        # 1. Enforce operation safety policy (read-only and no autonomous write operations unless user_approved)
         if hasattr(self, "safety_guard") and self.safety_guard is not None:
-            is_allowed, denial_reason = self.safety_guard.validate_tool_execution(tool_name, args)
+            is_allowed, denial_reason = self.safety_guard.validate_tool_execution(
+                tool_name,
+                args,
+                is_user_approved=user_approved,
+            )
             if not is_allowed:
                 from personal_intelligence.security.guard import UnauthorizedWriteOperationError
                 logger.warning("OperationSafetyGuard blocked tool '%s': %s", tool_name, denial_reason)

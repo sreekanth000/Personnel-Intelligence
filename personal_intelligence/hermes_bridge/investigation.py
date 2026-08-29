@@ -243,13 +243,17 @@ class BoundedInvestigationWorkflow:
     def __init__(
         self,
         hermes_client: Optional[HermesClient] = None,
+        hermes_bridge: Optional[Any] = None,
         situation_store: Optional[SituationStore] = None,
         event_buffer: Optional[Any] = None,
     ) -> None:
-
-        self.hermes_client = hermes_client or HermesClient()
+        self.hermes_client = hermes_client or hermes_bridge or HermesClient()
         self.situation_store = situation_store or SituationStore()
         self.event_buffer = event_buffer
+
+    def investigate(self, task: InvestigationTask, max_retries: int = 2) -> InvestigationResult:
+        """Executes bounded investigation (alias for execute_investigation)."""
+        return self.execute_investigation(task=task, max_retries=max_retries)
 
     def create_task(
         self,

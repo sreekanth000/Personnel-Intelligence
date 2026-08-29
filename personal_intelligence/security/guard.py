@@ -233,19 +233,31 @@ class OperationSafetyGuard:
         self,
         tool_name: str,
         tool_args: Optional[Dict[str, Any]] = None,
+        is_user_approved: bool = False,
     ) -> Tuple[bool, Optional[str]]:
         """
         Validates whether a tool invocation is permissible under read-only / no-autonomous-write rules.
+        If is_user_approved is True, user-authorized mutation actions may execute.
+        Otherwise, all external mutations are strictly blocked in V1.
         Returns (is_allowed, denial_reason).
         """
         tname = str(tool_name).strip().lower()
         args = tool_args or {}
 
-        # 1. Reject forbidden write operations
-        if tname in self.FORBIDDEN_WRITE_TOOLS or any(fw in tname for fw in ["send_email", "delete_file", "modify_calendar", "delete_drive", "send_meet"]):
+        # 1. Reject forbidden write operations unless explicit user approval is provided
+        is_write_tool = (
+            tname in self.FORBIDDEN_WRITE_TOOLS
+            or any(fw in tname for fw in [
+                "send_email", "send_mail", "modify_calendar", "delete_file",
+                "modify_drive", "delete_drive", "send_meet", "send_message",
+                "update_calendar", "create_calendar", "delete_calendar",
+            ])
+        )
+
+        if is_write_tool and not is_user_approved:
             return (
                 False,
-                f"Unauthorized autonomous write operation '{tool_name}'. Personal Intelligence V1 is strictly read-only for external communications and services.",
+                f"Unauthorized autonomous write operation '{tool_name}'. Personal Intelligence V1 is strictly read-only for external communications and services unless explicitly user-approved.",
             )
 
         # 2. Check filesystem path boundaries if filesystem tool

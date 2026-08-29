@@ -43,8 +43,8 @@ class LearningEngine:
         self,
         pattern_store: Optional[PatternStore] = None,
         db_manager: Optional[DatabaseManager] = None,
-        decay_after_days: int = 14,
-        inactivate_after_days: int = 45,
+        decay_after_days: int = 60,
+        inactivate_after_days: int = 120,
     ) -> None:
         self.pattern_store = pattern_store or PatternStore(db_manager=db_manager)
         self.decay_after_days = decay_after_days
@@ -173,13 +173,16 @@ class LearningEngine:
         self,
         pattern: Pattern,
         as_of: Optional[datetime] = None,
+        recent_evidence_window_days: float = 14.0,
     ) -> Tuple[PatternStatus, str]:
         """
-        Evaluates stage transitions, recency decay, and evidence strength across the 7 stages:
+        Evaluates stage transitions, recency decay, and evidence strength across the 7 stages
+        according to strict deterministic V1.2 rules:
           OBSERVED -> HYPOTHESIS -> EMERGING -> SUPPORTED -> ACTIVE -> DECAYING -> INACTIVE.
         """
         now = ensure_timezone_aware(as_of or datetime.now(timezone.utc), "as_of")
         days_since_last_seen = max(0.0, (now - pattern.last_seen).total_seconds() / 86400.0)
+        time_span_days = max(0.0, (pattern.last_seen - pattern.first_seen).total_seconds() / 86400.0)
 
         support = pattern.support_count
         contra = pattern.contradiction_count
@@ -188,86 +191,86 @@ class LearningEngine:
         if total == 0:
             return PatternStatus.OBSERVED, "weak"
 
-        ratio = support / total
+        contra_rate = contra / total if total > 0 else 0.0
         current = pattern.status.upper()
 
-        # --- 1. Severe Contradiction / Inactivation Rule ---
-        if (contra >= support and contra >= 3) or (total >= 5 and ratio <= 0.50):
-            return PatternStatus.INACTIVE, "weak"
-
-        # --- 2. Temporal Inactivity Rule: Prolonged silence causes INACTIVE ---
+        # 1. Temporal Inactivity: Prolonged silence (>= 120 days) -> INACTIVE
         if days_since_last_seen >= self.inactivate_after_days:
             return PatternStatus.INACTIVE, "weak"
 
-        # --- 3. Recency Decay Gate: Silence for >= decay_after_days weakens pattern to DECAYING ---
-        if days_since_last_seen >= self.decay_after_days and current in (
-            PatternStatus.ACTIVE.value,
-            PatternStatus.SUPPORTED.value,
-            PatternStatus.EMERGING.value,
-        ):
-            return PatternStatus.DECAYING, "weak" if ratio < 0.70 else "moderate"
+        # 2. High Contradiction Rate (> 50%)
+        if contra_rate >= 0.50 and total >= 3:
+            if current in (PatternStatus.ACTIVE.value, PatternStatus.SUPPORTED.value, PatternStatus.EMERGING.value, PatternStatus.DECAYING.value):
+                return PatternStatus.DECAYING, "weak"
+            return PatternStatus.HYPOTHESIS, "weak"
 
-        # --- 4. Contradiction Decay Gate: High contradiction proportion triggers DECAYING ---
-        if contra >= 2 and (
-            ratio < 0.75
-            or current in (PatternStatus.ACTIVE.value, PatternStatus.SUPPORTED.value, PatternStatus.EMERGING.value)
-        ):
-            return PatternStatus.DECAYING, "weak" if ratio < 0.60 else "moderate"
+        # 3. Recency Decay Gate: Silence >= 60 days on active/supported pattern -> DECAYING
+        if days_since_last_seen >= self.decay_after_days:
+            if current in (PatternStatus.ACTIVE.value, PatternStatus.SUPPORTED.value, PatternStatus.EMERGING.value):
+                return PatternStatus.DECAYING, "moderate" if contra_rate < 0.20 else "weak"
 
         # Evidence Strength Calculation
-        if support >= 7 and ratio >= 0.80:
+        if support >= 10 and contra_rate < 0.20:
             strength = "strong"
-        elif support >= 3 and ratio >= 0.70:
+        elif support >= 3 and contra_rate < 0.30:
             strength = "moderate"
         else:
             strength = "weak"
 
-        # --- 5. Recovery Gates: Recovering from INACTIVE or DECAYING ---
+        # 4. Recovery Gates from DECAYING or INACTIVE
         if current == PatternStatus.INACTIVE.value:
-            # Re-activation gate: requires fresh support and healthy ratio
-            if days_since_last_seen < self.decay_after_days and ratio >= 0.60:
-                if support >= 7 and ratio >= 0.80:
-                    return PatternStatus.SUPPORTED, strength
-                elif support >= 4 and ratio >= 0.75:
-                    return PatternStatus.EMERGING, strength
+            if days_since_last_seen < self.decay_after_days and contra_rate < 0.30:
+                if support >= 10 and time_span_days >= 45 and contra_rate < 0.20:
+                    return PatternStatus.ACTIVE, "strong"
+                if support >= 6 and time_span_days >= 21 and contra_rate < 0.20:
+                    return PatternStatus.SUPPORTED, "strong"
+                if support >= 3 and time_span_days >= 7 and contra_rate < 0.50:
+                    return PatternStatus.EMERGING, "moderate"
                 return PatternStatus.HYPOTHESIS, "weak"
             return PatternStatus.INACTIVE, strength
 
         if current == PatternStatus.DECAYING.value:
-            # Recovery from decay when fresh supporting evidence is observed and contradictions are minimal
-            if days_since_last_seen < self.decay_after_days and ratio >= 0.70 and contra <= 2:
-                if support >= 10 and ratio >= 0.85:
+            if days_since_last_seen < recent_evidence_window_days and contra_rate < 0.20:
+                if support >= 10 and time_span_days >= 45:
                     return PatternStatus.ACTIVE, "strong"
-                if support >= 7 and ratio >= 0.80:
+                if support >= 6 and time_span_days >= 21:
                     return PatternStatus.SUPPORTED, "strong"
-                if support >= 4 and ratio >= 0.75:
+                if support >= 3 and time_span_days >= 7:
                     return PatternStatus.EMERGING, "moderate"
-                return PatternStatus.HYPOTHESIS, "weak"
             return PatternStatus.DECAYING, strength
 
-
-        # --- 6. Progressive Promotion Gates (Prevents premature jumping) ---
-        # Gate 5: ACTIVE (Requires >= 10 support observations, >= 85% ratio, strong evidence, recent)
-        if support >= 10 and ratio >= 0.85 and contra <= 2 and days_since_last_seen < self.decay_after_days:
+        # 5. Progressive Promotion Gates (V1.2 Deterministic Rules)
+        # ACTIVE: support >= 10, span >= 45 days, contra < 20%, recent evidence within window
+        if (
+            support >= 10
+            and time_span_days >= 45.0
+            and contra_rate < 0.20
+            and days_since_last_seen <= recent_evidence_window_days
+        ):
             return PatternStatus.ACTIVE, "strong"
 
-        # Gate 4: SUPPORTED (Requires >= 7 support observations, >= 80% ratio)
-        if support >= 7 and ratio >= 0.80 and days_since_last_seen < self.decay_after_days:
+        # SUPPORTED: support >= 6, span >= 21 days, contra < 20%
+        if (
+            support >= 6
+            and time_span_days >= 21.0
+            and contra_rate < 0.20
+            and days_since_last_seen < self.decay_after_days
+        ):
             return PatternStatus.SUPPORTED, "strong"
 
-        # Gate 3: EMERGING (Requires >= 4 support observations, >= 75% ratio)
-        if support >= 4 and ratio >= 0.75:
+        # EMERGING: support >= 3, span >= 7 days, contra < 50%
+        if (
+            support >= 3
+            and time_span_days >= 7.0
+            and contra_rate < 0.50
+        ):
             return PatternStatus.EMERGING, "moderate"
 
-        # Gate 2: HYPOTHESIS (Requires >= 2 support observations, minimal contradictions)
-        if support >= 2 and contra <= 1:
+        # HYPOTHESIS: support >= 1
+        if support >= 1:
             return PatternStatus.HYPOTHESIS, "weak"
 
-        # If contradictions exist on an established pattern, decay rather than falling to OBSERVED
-        if contra >= 2:
-            return PatternStatus.DECAYING, "weak"
-
-        # Gate 1: OBSERVED (Default initial observation)
+        # OBSERVED
         return PatternStatus.OBSERVED, "weak"
 
     def apply_recency_decay(
@@ -369,6 +372,36 @@ class LearningEngine:
                     metadata={
                         "dimension": "cross_source_coordination",
                         "co_occurrence_count": len(co_occurrences),
+                    },
+                )
+                discovered.append(pat)
+
+        # 3. Project communication bursts (repeated communication events clustered around specific projects)
+        project_events: Dict[str, List[Event]] = defaultdict(list)
+        for ev in events:
+            proj = None
+            if isinstance(ev.payload, dict):
+                proj = ev.payload.get("project") or ev.payload.get("project_name") or ev.payload.get("topic")
+            if not proj and ev.subject_id and ev.subject_id.startswith(("proj_", "project_", "prj_")):
+                proj = ev.subject_id
+            if proj:
+                project_events[str(proj)].append(ev)
+
+        for proj_name, p_evs in project_events.items():
+            if len(p_evs) >= 3:
+                desc = f"Project '{proj_name}' frequently generates repeated communication bursts."
+                pat = self._upsert_pattern(
+                    description=desc,
+                    pattern_type=PatternType.WORLD_PATTERN,
+                    supporting_episodes=[],
+                    contradicting_episodes=[],
+                    supporting_event_ids=[e.id for e in p_evs],
+                    first_seen=min(e.event_time for e in p_evs),
+                    last_seen=max(e.event_time for e in p_evs),
+                    metadata={
+                        "dimension": "project_communication_burst",
+                        "project": proj_name,
+                        "burst_event_count": len(p_evs),
                     },
                 )
                 discovered.append(pat)
@@ -503,6 +536,47 @@ class LearningEngine:
                 },
             )
             discovered.append(pat)
+
+        # 4. Recurring commitments completed shortly before deadline (< 2 hours before due_at)
+        commitment_events = [
+            e for e in sorted_events
+            if ("commitment" in e.event_type or "task" in e.event_type or "completed" in str(e.payload).lower())
+            and isinstance(e.payload, dict) and e.payload.get("due_at")
+        ]
+        if len(commitment_events) >= 2:
+            short_notice_completions = []
+            for ce in commitment_events:
+                due_val = ce.payload.get("due_at")
+                try:
+                    if isinstance(due_val, str):
+                        due_dt = datetime.fromisoformat(due_val.replace("Z", "+00:00"))
+                    elif isinstance(due_val, datetime):
+                        due_dt = due_val
+                    else:
+                        continue
+                    due_dt = ensure_timezone_aware(due_dt, "due_at")
+                    time_before_hours = (due_dt - ce.event_time).total_seconds() / 3600.0
+                    if 0.0 <= time_before_hours <= 2.5:
+                        short_notice_completions.append(ce)
+                except Exception:
+                    pass
+
+            if len(short_notice_completions) >= 2:
+                desc = "A recurring commitment is frequently completed shortly before its deadline."
+                pat = self._upsert_pattern(
+                    description=desc,
+                    pattern_type=PatternType.BEHAVIORAL_PATTERN,
+                    supporting_episodes=[],
+                    contradicting_episodes=[],
+                    supporting_event_ids=[e.id for e in short_notice_completions],
+                    first_seen=min(e.event_time for e in short_notice_completions),
+                    last_seen=max(e.event_time for e in short_notice_completions),
+                    metadata={
+                        "dimension": "deadline_completion_timing",
+                        "completion_count": len(short_notice_completions),
+                    },
+                )
+                discovered.append(pat)
 
         return discovered
 
@@ -662,8 +736,98 @@ class LearningEngine:
                 )
                 discovered_patterns.append(pat)
 
+        # --- 5. Low-Urgency Interruption Dismissals ---
+        low_urg_interrupts = [
+            ep for ep in evaluated_episodes
+            if ep.urgency in ("low", "medium")
+            and (
+                (isinstance(ep.intervention_decision, dict) and ep.intervention_decision.get("action") == "INTERRUPT")
+                or self._extract_context(ep) in ("busy", "deep_work", "meeting", "focused")
+            )
+        ]
+        if len(low_urg_interrupts) >= 2:
+            dismissed = [ep for ep in low_urg_interrupts if self._is_negative_response(self._extract_user_response(ep))]
+            accepted = [ep for ep in low_urg_interrupts if self._is_positive_response(self._extract_user_response(ep))]
+            dismiss_rate = len(dismissed) / len(low_urg_interrupts)
+
+            if dismiss_rate >= 0.60:
+                desc = "User frequently dismisses low-urgency interruptions during focused or busy states."
+                pat = self._upsert_pattern(
+                    description=desc,
+                    pattern_type=PatternType.INTERACTION_PATTERN,
+                    supporting_episodes=[ep.id for ep in dismissed],
+                    contradicting_episodes=[ep.id for ep in accepted],
+                    first_seen=min(ep.created_at for ep in low_urg_interrupts),
+                    last_seen=max(ep.created_at for ep in low_urg_interrupts),
+                    metadata={
+                        "dimension": "low_urgency_dismissal",
+                        "dismissal_rate": round(dismiss_rate, 2),
+                        "low_urgency_count": len(low_urg_interrupts),
+                    },
+                )
+                discovered_patterns.append(pat)
 
         return discovered_patterns
+
+    def synthesize_interaction_preferences(
+        self,
+        episodes: Optional[List[ReasoningEpisode]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Synthesizes empirical interaction preferences answering:
+        'How does this person prefer to be helped?'
+        without hardcoded rules or predefined assumptions.
+        """
+        if episodes:
+            self.discover_interaction_patterns(episodes)
+
+        all_patterns = self.pattern_store.list_patterns(limit=100)
+        interaction_patterns = [
+            p for p in all_patterns
+            if p.pattern_type == PatternType.INTERACTION_PATTERN.value and p.status in (
+                PatternStatus.ACTIVE.value,
+                PatternStatus.SUPPORTED.value,
+                PatternStatus.EMERGING.value,
+                PatternStatus.HYPOTHESIS.value,
+            )
+        ]
+
+        prefers_specific = any(
+            "specific" in p.description.lower() for p in interaction_patterns
+        )
+        morning_pref = any(
+            "morning" in p.description.lower() for p in interaction_patterns
+        )
+        dismisses_low_urgency = any(
+            "low-urgency" in p.description.lower() or "busy" in p.description.lower()
+            for p in interaction_patterns
+        )
+        high_urgency_receptive = any(
+            "high urgency" in p.description.lower() for p in interaction_patterns
+        )
+
+        timing_pref = "morning" if morning_pref else "any"
+
+        summary_parts = []
+        if prefers_specific:
+            summary_parts.append("prefers specific actionable recommendations over generic reminders")
+        if morning_pref:
+            summary_parts.append("is more responsive to morning notifications")
+        if dismisses_low_urgency:
+            summary_parts.append("frequently dismisses low-urgency interruptions during focused work")
+        if high_urgency_receptive:
+            summary_parts.append("accepts high-urgency notifications with high responsiveness")
+
+        summary = "User " + ", ".join(summary_parts) + "." if summary_parts else "No clear interaction preferences established yet."
+
+        return {
+            "prefers_specific_recommendations": prefers_specific,
+            "preferred_timing_window": timing_pref,
+            "dismisses_low_urgency_interruptions": dismisses_low_urgency,
+            "high_urgency_receptive": high_urgency_receptive,
+            "active_interaction_pattern_count": len(interaction_patterns),
+            "summary": summary,
+        }
 
     # -------------------------------------------------------------------------
     # Unified Multi-Source Learning Pipeline

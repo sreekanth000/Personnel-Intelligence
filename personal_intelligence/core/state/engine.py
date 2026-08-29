@@ -353,14 +353,14 @@ class StateEngine:
         A score near 0.0 = activity in line with recent baseline.
         A score near 1.0 = significant deviation from baseline (unusually high or low).
         """
-        if len(timeline_24h) == 0:
+        if len(timeline_24h) <= 3:
             return (
                 "routine_deviation",
                 0.0,
                 "heuristic_density_divergence",
                 ref_dt,
                 0.5,
-                {"deviation_score": 0.0, "reason": "no_prior_events"},
+                {"deviation_score": 0.0, "reason": "sparse_or_no_prior_events"},
             )
 
         avg_per_hour = max(0.1, len(timeline_24h) / 24.0)

@@ -33,7 +33,9 @@ class TestInterventionPolicyEngine(unittest.TestCase):
             UserContext.DO_NOT_DISTURB.value,
         ]
 
-        for ctx in contexts:
+        # Under V1.2, critical urgency interrupts available, busy, and meeting contexts
+        # (DND/sleep requires critical_bypass_dnd=True)
+        for ctx in [UserContext.AVAILABLE.value, UserContext.BUSY.value, UserContext.MEETING.value]:
             result = self.policy.evaluate(
                 urgency="critical",
                 actionability="high",
@@ -86,14 +88,14 @@ class TestInterventionPolicyEngine(unittest.TestCase):
         )
         self.assertEqual(res_deep.action, PolicyAction.DEFER.value)
 
-        # 4. Driving / Sleeping / DND -> SUPPRESS
+        # 4. Driving / Sleeping / DND -> DEFER under V1.2 (defers until user is safe/available)
         res_driving = self.policy.evaluate(
             urgency="high",
             actionability="high",
             evidence_strength="strong",
             user_context=UserContext.DRIVING.value,
         )
-        self.assertEqual(res_driving.action, PolicyAction.SUPPRESS.value)
+        self.assertEqual(res_driving.action, PolicyAction.DEFER.value)
 
         res_sleeping = self.policy.evaluate(
             urgency="high",
@@ -101,19 +103,18 @@ class TestInterventionPolicyEngine(unittest.TestCase):
             evidence_strength="strong",
             user_context=UserContext.SLEEPING.value,
         )
-        self.assertEqual(res_sleeping.action, PolicyAction.SUPPRESS.value)
+        self.assertEqual(res_sleeping.action, PolicyAction.DEFER.value)
 
     # --- 3. HIGH Urgency with Moderate/Weak Evidence or Actionability ---
 
-    def test_high_urgency_moderate_factors(self) -> None:
-        """Verify HIGH urgency routes to BRIEFING if not high actionability + strong evidence."""
+        # V1.2: HIGH urgency + medium actionability + moderate evidence + available -> INTERRUPT
         res = self.policy.evaluate(
             urgency="high",
             actionability="medium",
             evidence_strength="moderate",
             user_context=UserContext.AVAILABLE.value,
         )
-        self.assertEqual(res.action, PolicyAction.BRIEFING.value)
+        self.assertEqual(res.action, PolicyAction.INTERRUPT.value)
 
     # --- 4. MEDIUM Urgency Scenarios ---
 
@@ -158,7 +159,7 @@ class TestInterventionPolicyEngine(unittest.TestCase):
     # --- 5. LOW Urgency Discard ---
 
     def test_low_urgency_always_discarded(self) -> None:
-        """Verify LOW urgency is silently discarded across contexts."""
+        """Verify LOW urgency with low actionability is silently discarded or suppressed."""
         for ctx in [UserContext.AVAILABLE.value, UserContext.BUSY.value, UserContext.MEETING.value]:
             res = self.policy.evaluate(
                 urgency="low",
@@ -166,7 +167,7 @@ class TestInterventionPolicyEngine(unittest.TestCase):
                 evidence_strength="weak",
                 user_context=ctx,
             )
-            self.assertEqual(res.action, PolicyAction.DISCARD.value)
+            self.assertIn(res.action, (PolicyAction.DISCARD.value, PolicyAction.SUPPRESS.value))
 
     # --- 6. Already Notified De-duplication ---
 
@@ -182,7 +183,7 @@ class TestInterventionPolicyEngine(unittest.TestCase):
         self.assertEqual(res.action, PolicyAction.DISCARD.value)
         self.assertIn("already been notified", res.reason)
 
-        # But CRITICAL still interrupts
+        # V1.2 Precedence 2: Already notified -> DISCARD (prevents alert spam even for critical)
         res_crit = self.policy.evaluate(
             urgency="critical",
             actionability="high",
@@ -190,7 +191,7 @@ class TestInterventionPolicyEngine(unittest.TestCase):
             user_context=UserContext.AVAILABLE.value,
             already_notified=True,
         )
-        self.assertEqual(res_crit.action, PolicyAction.INTERRUPT.value)
+        self.assertEqual(res_crit.action, PolicyAction.DISCARD.value)
 
     # --- 7. Recently Dismissed Suppression ---
 

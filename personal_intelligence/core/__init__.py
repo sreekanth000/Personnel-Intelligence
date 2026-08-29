@@ -8,8 +8,10 @@ and the evaluation loop.
 """
 
 from personal_intelligence.core.loop import (
+    EarlyExitReason,
     EvaluationLoopResult,
     PersonalIntelligenceEvaluationLoop,
+    PersonalIntelligenceLoop,
 )
 from personal_intelligence.core.world import (
     Commitment,
@@ -22,7 +24,9 @@ from personal_intelligence.core.world import (
 
 __all__ = [
     "PersonalIntelligenceEvaluationLoop",
+    "PersonalIntelligenceLoop",
     "EvaluationLoopResult",
+    "EarlyExitReason",
     "PersonalWorldModel",
     "CurrentState",
     "PersonalWorldModelSnapshot",

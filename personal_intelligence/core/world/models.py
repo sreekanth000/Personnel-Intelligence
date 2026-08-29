@@ -23,15 +23,6 @@ from personal_intelligence.core.events.models import (
 )
 
 
-class CommitmentStatus(str, Enum):
-    """Status of an explicit or detected personal commitment."""
-    PENDING = "pending"
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
-    CANCELLED = "cancelled"
-    EXPIRED = "expired"
-
-
 class IssueSeverity(str, Enum):
     """Severity of an open tension or issue."""
     CRITICAL = "critical"
@@ -47,6 +38,54 @@ class IssueStatus(str, Enum):
     INVESTIGATING = "investigating"
     RESOLVED = "resolved"
     DISMISSED = "dismissed"
+
+
+@dataclass
+class FactProvenance:
+    """
+    Explicit provenance metadata ensuring every derived fact in the world model
+    is traceable back to its source observation, reasoning episode, and original Hermes source.
+    """
+    source_observation_id: Optional[str] = None
+    reasoning_episode_id: Optional[str] = None
+    origin_source: Optional[str] = None  # e.g. 'gmail', 'drive', 'calendar', 'meet', 'filesystem', 'user', 'hermes'
+    source_id: Optional[str] = None      # e.g. message_id, doc_id, event_id, file_path
+    tool: Optional[str] = None           # e.g. 'google_workspace_gmail', 'filesystem'
+    retrieval_query: Optional[str] = None
+    derivation_rule: Optional[str] = None
+    recorded_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    def __post_init__(self) -> None:
+        self.recorded_at = ensure_timezone_aware(self.recorded_at, "FactProvenance recorded_at")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "source_observation_id": self.source_observation_id,
+            "reasoning_episode_id": self.reasoning_episode_id,
+            "origin_source": self.origin_source,
+            "source_id": self.source_id,
+            "tool": self.tool,
+            "retrieval_query": self.retrieval_query,
+            "derivation_rule": self.derivation_rule,
+            "recorded_at": format_iso8601(self.recorded_at),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "FactProvenance":
+        if not isinstance(data, dict):
+            return cls()
+        return cls(
+            source_observation_id=data.get("source_observation_id"),
+            reasoning_episode_id=data.get("reasoning_episode_id"),
+            origin_source=data.get("origin_source") or data.get("source"),
+            source_id=data.get("source_id"),
+            tool=data.get("tool"),
+            retrieval_query=data.get("retrieval_query") or data.get("query"),
+            derivation_rule=data.get("derivation_rule"),
+            recorded_at=ensure_timezone_aware(
+                data.get("recorded_at", datetime.now(timezone.utc)), "recorded_at"
+            ),
+        )
 
 
 @dataclass
@@ -73,7 +112,6 @@ class ProbabilisticFact:
 
     def reinforce_evidence(self, evidence_confidence: float) -> None:
         """Applies Bayesian update when supporting evidence is observed."""
-        # P(H|E) update
         self.belief_score = 1.0 - (1.0 - self.belief_score) * (1.0 - max(0.0, min(1.0, evidence_confidence)))
         self.salience_score = min(1.0, self.salience_score + 0.2)
         self.updated_at = datetime.now(timezone.utc)
@@ -127,82 +165,91 @@ class ProbabilisticFact:
         )
 
 
-@dataclass
-class FactProvenance:
+class CommitmentStatus(str, Enum):
     """
-    Explicit provenance metadata ensuring every derived fact in the world model
-    is traceable back to its source observation, reasoning episode, and original Hermes source.
+    Allowed commitment statuses in Personal Intelligence V1.
+    Strictly derived from verified observations or explicit user actions.
+    Hermes inference must NOT silently change commitment status.
     """
-    source_observation_id: Optional[str] = None
-    reasoning_episode_id: Optional[str] = None
-    origin_source: Optional[str] = None  # e.g. 'gmail', 'drive', 'calendar', 'meet', 'filesystem', 'user', 'hermes'
-    source_id: Optional[str] = None      # e.g. message_id, doc_id, event_id, file_path
-    tool: Optional[str] = None           # e.g. 'google_workspace_gmail', 'filesystem'
-    retrieval_query: Optional[str] = None
-    derivation_rule: Optional[str] = None
-    recorded_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    OPEN = "OPEN"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+    OVERDUE = "OVERDUE"
+    CANCELLED = "CANCELLED"
+    UNKNOWN = "UNKNOWN"
 
-    def __post_init__(self) -> None:
-        self.recorded_at = ensure_timezone_aware(self.recorded_at, "FactProvenance recorded_at")
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "source_observation_id": self.source_observation_id,
-            "reasoning_episode_id": self.reasoning_episode_id,
-            "origin_source": self.origin_source,
-            "source_id": self.source_id,
-            "tool": self.tool,
-            "retrieval_query": self.retrieval_query,
-            "derivation_rule": self.derivation_rule,
-            "recorded_at": format_iso8601(self.recorded_at),
-        }
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "FactProvenance":
-        if not isinstance(data, dict):
-            return cls()
-        return cls(
-            source_observation_id=data.get("source_observation_id"),
-            reasoning_episode_id=data.get("reasoning_episode_id"),
-            origin_source=data.get("origin_source") or data.get("source"),
-            source_id=data.get("source_id"),
-            tool=data.get("tool"),
-            retrieval_query=data.get("retrieval_query") or data.get("query"),
-            derivation_rule=data.get("derivation_rule"),
-            recorded_at=ensure_timezone_aware(
-                data.get("recorded_at", datetime.now(timezone.utc)), "recorded_at"
-            ),
-        )
+    # Backward compatibility aliases
+    PENDING = "OPEN"
+    EXPIRED = "OVERDUE"
 
 
 @dataclass
 class Commitment:
     """
-    A personal commitment or action item (e.g. from an email promise, meeting action item, or task).
+    A personal commitment or action item represented as an entity (entities.entity_type = 'commitment')
+    in the Personal World Model Knowledge Graph.
+
+    Graph Relationships:
+      USER -> owns -> COMMITMENT
+      COMMITMENT -> supports -> GOAL
+      COMMITMENT -> concerns -> PROJECT
+      COMMITMENT -> associated_with -> MEETING
     """
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    name: str = ""
     description: str = ""
-    status: str = CommitmentStatus.PENDING.value
+    entity_type: str = "commitment"
+    status: str = CommitmentStatus.OPEN.value
     due_at: Optional[datetime] = None
+    priority: str = "medium"
+    source: str = ""
+    source_id: str = ""
+    goal_id: Optional[str] = None
+    satisfaction_criteria: List[str] = field(default_factory=list)
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    last_activity: Optional[datetime] = None  # Most recent related observation
     provenance: FactProvenance = field(default_factory=FactProvenance)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        if not self.name and self.description:
+            self.name = self.description
+        elif not self.description and self.name:
+            self.description = self.name
         self.created_at = ensure_timezone_aware(self.created_at, "Commitment created_at")
         self.updated_at = ensure_timezone_aware(self.updated_at, "Commitment updated_at")
         if self.due_at:
             self.due_at = ensure_timezone_aware(self.due_at, "Commitment due_at")
+        if self.last_activity:
+            self.last_activity = ensure_timezone_aware(self.last_activity, "Commitment last_activity")
+        if isinstance(self.status, CommitmentStatus):
+            self.status = self.status.value
+        elif isinstance(self.status, str):
+            st = self.status.strip().upper()
+            if st in ("PENDING", "OPEN"):
+                self.status = CommitmentStatus.OPEN.value
+            elif st == "EXPIRED":
+                self.status = CommitmentStatus.OVERDUE.value
+            else:
+                self.status = st
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
+            "entity_type": self.entity_type,
+            "name": self.name,
             "description": self.description,
             "status": self.status,
             "due_at": format_iso8601(self.due_at) if self.due_at else None,
+            "priority": self.priority,
+            "source": self.source,
+            "source_id": self.source_id,
+            "goal_id": self.goal_id,
+            "satisfaction_criteria": self.satisfaction_criteria,
             "created_at": format_iso8601(self.created_at),
             "updated_at": format_iso8601(self.updated_at),
+            "last_activity": format_iso8601(self.last_activity) if self.last_activity else None,
             "provenance": self.provenance.to_dict(),
             "metadata": self.metadata,
         }
@@ -211,13 +258,23 @@ class Commitment:
     def from_dict(cls, data: Dict[str, Any]) -> "Commitment":
         prov = data.get("provenance", {})
         prov_obj = prov if isinstance(prov, FactProvenance) else FactProvenance.from_dict(prov)
+        name = data.get("name") or data.get("description", "")
+        desc = data.get("description") or name
         return cls(
             id=data.get("id", str(uuid.uuid4())),
-            description=data.get("description", ""),
-            status=data.get("status", CommitmentStatus.PENDING.value),
+            name=name,
+            description=desc,
+            entity_type=data.get("entity_type", "commitment"),
+            status=data.get("status", CommitmentStatus.OPEN.value),
             due_at=ensure_timezone_aware(data["due_at"], "due_at") if data.get("due_at") else None,
+            priority=data.get("priority", "medium"),
+            source=data.get("source", ""),
+            source_id=data.get("source_id", ""),
+            goal_id=data.get("goal_id"),
+            satisfaction_criteria=data.get("satisfaction_criteria", []),
             created_at=ensure_timezone_aware(data.get("created_at", datetime.now(timezone.utc)), "created_at"),
             updated_at=ensure_timezone_aware(data.get("updated_at", datetime.now(timezone.utc)), "updated_at"),
+            last_activity=ensure_timezone_aware(data["last_activity"], "last_activity") if data.get("last_activity") else None,
             provenance=prov_obj,
             metadata=data.get("metadata", {}),
         )

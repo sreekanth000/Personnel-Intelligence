@@ -27,6 +27,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // Mode Switcher & Demo Controller Elements
   const btnModeLive = document.getElementById("btn-mode-live");
   const btnModeDemo = document.getElementById("btn-mode-demo");
+  const btnModeTest = document.getElementById("btn-mode-test");
   const demoControlStrip = document.getElementById("demo-control-strip");
   const demoScenarioSelect = document.getElementById("demo-scenario-select");
   const btnDemoInject = document.getElementById("btn-demo-inject");
@@ -80,6 +81,7 @@ document.addEventListener("DOMContentLoaded", () => {
   let currentTimelineFilter = "all";
   let currentPriorityFilter = "ALL";
   let isDemoMode = false;
+  let currentOperatingMode = "LIVE";
   let cachedSituations = [];
   let cachedTimeline = [];
   let selectedSituationId = null;
@@ -135,39 +137,50 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // Global error banner dismiss
-  errorDismissBtn.addEventListener("click", () => {
-    globalErrorBanner.classList.add("hidden");
+  errorDismissBtn?.addEventListener("click", () => {
+    globalErrorBanner?.classList.add("hidden");
   });
 
   function showError(msg) {
+    if (!globalErrorBanner || !globalErrorText) return;
     globalErrorText.textContent = msg;
     globalErrorBanner.classList.remove("hidden");
   }
 
   function hideError() {
-    globalErrorBanner.classList.add("hidden");
+    if (globalErrorBanner) globalErrorBanner.classList.add("hidden");
   }
 
   // =========================================================================
-  // 2. Mode Switching (LIVE MODE vs DEMO MODE)
+  // 2. Mode Switching (LIVE vs DEMO vs TEST)
   // =========================================================================
   async function setMode(mode) {
-    isDemoMode = (mode === "DEMO");
+    const m = (mode || "LIVE").toUpperCase();
+    currentOperatingMode = m;
+    isDemoMode = (m === "DEMO" || m === "TEST");
+
+    [btnModeLive, btnModeDemo, btnModeTest].forEach(b => {
+      if (!b) return;
+      if (b.id === `btn-mode-${m.toLowerCase()}`) {
+        b.classList.add("active");
+      } else {
+        b.classList.remove("active");
+      }
+    });
+
     if (isDemoMode) {
-      btnModeLive.classList.remove("active");
-      btnModeDemo.classList.add("active");
-      demoControlStrip.classList.remove("hidden");
+      demoControlStrip?.classList.remove("hidden");
+      const badge = document.getElementById("operating-mode-badge");
+      if (badge) badge.textContent = `${m} MODE ACTIVE`;
     } else {
-      btnModeDemo.classList.remove("active");
-      btnModeLive.classList.add("active");
-      demoControlStrip.classList.add("hidden");
+      demoControlStrip?.classList.add("hidden");
     }
 
     try {
-      await fetch("/api/pi/demo/toggle", {
+      await fetch("/api/pi/mode", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: isDemoMode ? "DEMO" : "LIVE" }),
+        body: JSON.stringify({ mode: m }),
       });
     } catch (e) {
       console.warn("Could not sync mode to backend:", e);
@@ -177,11 +190,12 @@ document.addEventListener("DOMContentLoaded", () => {
     fetchActivityStream();
   }
 
-  btnModeLive.addEventListener("click", () => setMode("LIVE"));
-  btnModeDemo.addEventListener("click", () => setMode("DEMO"));
+  btnModeLive?.addEventListener("click", () => setMode("LIVE"));
+  btnModeDemo?.addEventListener("click", () => setMode("DEMO"));
+  btnModeTest?.addEventListener("click", () => setMode("TEST"));
 
   async function loadScenario(scenarioId) {
-    showStatus(`Injecting Synthetic Observations & Executing Pipeline (Scenario ${scenarioId})...`);
+    showStatus(`Executing Pipeline Scenario ${scenarioId}...`);
     try {
       const res = await fetch("/api/pi/demo/load_scenario", {
         method: "POST",
@@ -230,7 +244,7 @@ document.addEventListener("DOMContentLoaded", () => {
   btnDemoRun?.addEventListener("click", runDemoIntelligence);
 
   btnDemoReset?.addEventListener("click", async () => {
-    showStatus("Resetting demo state to default baseline...");
+    showStatus("Resetting demo state to baseline...");
     try {
       const res = await fetch("/api/pi/demo/reset", { method: "POST" });
       const data = await res.json();
@@ -238,10 +252,9 @@ document.addEventListener("DOMContentLoaded", () => {
       fetchOverview();
       fetchSituations();
       fetchActivityStream();
-      alert("Demo state reset to initial baseline.");
     } catch (err) {
       hideStatus();
-      alert("Error resetting demo: " + err.message);
+      alert("Error resetting state: " + err.message);
     }
   });
 
@@ -260,6 +273,252 @@ document.addEventListener("DOMContentLoaded", () => {
       alert("Error clearing demo state: " + err.message);
     }
   });
+
+  // =========================================================================
+  // 3. Live Execution Activity Stream Fetcher
+  // =========================================================================
+  async function fetchActivityStream() {
+    try {
+      const url = lastActivityId ? `/api/pi/activity?since_id=${lastActivityId}&limit=50` : `/api/pi/activity?limit=50`;
+      const res = await fetch(url);
+      if (!res.ok) return;
+      const events = await res.json();
+      if (events && events.length > 0) {
+        lastActivityId = events[events.length - 1].id;
+        activityEventsCache = [...activityEventsCache, ...events].slice(-100);
+        renderActivityStream(activityEventsCache);
+      }
+    } catch (e) {
+      // Background activity poll silent catch
+    }
+  }
+
+  function renderActivityStream(events) {
+    if (!activityStreamContainer) return;
+    if (activityStreamCount) activityStreamCount.textContent = `${events.length} events`;
+
+    if (events.length === 0) {
+      activityStreamContainer.innerHTML = `<div class="loading-skeleton">Listening for execution lifecycle events...</div>`;
+      return;
+    }
+
+    activityStreamContainer.innerHTML = events.slice().reverse().map(e => `
+      <div class="activity-item">
+        <div class="activity-main">
+          <span class="activity-dot"></span>
+          <span class="activity-type-badge">${escapeHtml(e.type || e.stage || "TELEMETRY")}</span>
+          <span class="activity-summary">${escapeHtml(e.summary || e.description || "")}</span>
+        </div>
+        <span class="activity-time">${new Date(e.timestamp || Date.now()).toLocaleTimeString()}</span>
+      </div>
+    `).join("");
+  }
+
+  setInterval(fetchActivityStream, 2500);
+
+  // =========================================================================
+  // 4. Screen 1: Overview Fetcher & Renderer
+  // =========================================================================
+  async function fetchOverview() {
+    try {
+      const res = await fetch("/api/pi/overview");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      hideError();
+      await renderOverview(data);
+    } catch (err) {
+      console.error("fetchOverview error:", err);
+      showError("Could not fetch Overview from /api/pi/overview: " + err.message);
+    }
+  }
+
+  async function renderOverview(data) {
+    if (!data) return;
+
+    // 1. Current State Matrix
+    const cs = data.current_state || {};
+    const stateSumEl = document.getElementById("overview-state-summary");
+    if (stateSumEl) stateSumEl.textContent = cs.summary || "Evaluating multi-dimensional state...";
+    
+    const actEl = document.getElementById("overview-activity");
+    if (actEl) actEl.textContent = cs.current_focus || cs.activity || "Software Engineering";
+    
+    const attEl = document.getElementById("overview-attention-state");
+    if (attEl) attEl.textContent = cs.attention_state || "FOCUSED";
+    
+    const availEl = document.getElementById("overview-availability");
+    if (availEl) availEl.textContent = cs.availability || "AVAILABLE";
+    
+    const locEl = document.getElementById("overview-location");
+    if (locEl) locEl.textContent = cs.location || "Workspace";
+    
+    const timeEl = document.getElementById("overview-state-time");
+    if (timeEl) timeEl.textContent = new Date(cs.timestamp || Date.now()).toLocaleTimeString();
+
+    const featContainer = document.getElementById("overview-features-container");
+    if (cs.features && featContainer) {
+      featContainer.innerHTML = cs.features.map(f => {
+        let valDisplay = typeof f.value === "object" ? JSON.stringify(f.value) : f.value;
+        return `
+          <div class="feature-item">
+            <div>
+              <span class="feature-name">${escapeHtml(f.name)}</span>
+              <span class="feature-source">&bull; ${escapeHtml(f.source)}</span>
+            </div>
+            <span class="feature-val">${escapeHtml(String(valDisplay))}</span>
+          </div>
+        `;
+      }).join("");
+    }
+
+    // 2. What Changed
+    const changedContainer = document.getElementById("overview-what-changed-container");
+    if (changedContainer) {
+      try {
+        const cRes = await fetch("/api/pi/what_changed?hours=48");
+        const cData = await cRes.json();
+        const changes = cData.changes || [];
+        if (changes.length === 0) {
+          changedContainer.innerHTML = `<p class="state-lead-text" style="color: var(--text-muted);">No significant cross-domain deltas in the last 48 hours.</p>`;
+        } else {
+          changedContainer.innerHTML = changes.map(ch => `
+            <div class="pipeline-list-item" style="justify-content: space-between; margin-bottom: 0.5rem; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); padding: 0.6rem 0.8rem; border-radius: var(--radius-md);">
+              <div>
+                <div style="font-weight: 600; color: #fff; font-size: 0.88rem;">${escapeHtml(ch.description || ch.summary || "State delta")}</div>
+                <div style="font-size: 0.74rem; color: var(--text-muted); margin-top: 0.2rem;">
+                  Domain: <strong>${escapeHtml(ch.domain || "general")}</strong> &bull; Magnitude: ${escapeHtml(ch.magnitude || "MODERATE")}
+                </div>
+              </div>
+              <span class="badge badge-fact">${escapeHtml((ch.significance || "MEANINGFUL").toUpperCase())}</span>
+            </div>
+          `).join("");
+        }
+      } catch (err) {
+        changedContainer.innerHTML = `<p class="state-lead-text" style="color: var(--text-muted);">Baseline state active; monitoring temporal deltas.</p>`;
+      }
+    }
+
+    // 3. What Matters Now (Ranked Situations with 6 Card Fields)
+    const mattersContainer = document.getElementById("overview-what-matters-container");
+    const openSits = data.open_situations || [];
+    if (mattersContainer) {
+      if (openSits.length === 0) {
+        mattersContainer.innerHTML = `<p class="state-lead-text" style="color: var(--text-muted); padding: 1.5rem;">No urgent situational tensions detected. System baseline is calm and grounded.</p>`;
+      } else {
+        mattersContainer.innerHTML = openSits.map(s => {
+          const sitId = s.situation_id || s.id;
+          const sitStatus = (s.status || "OPEN").toUpperCase();
+          const priority = (s.priority || "HIGH").toUpperCase();
+          const whatHappened = s.what_happened || s.summary || "Observation anomaly detected.";
+          const whyItMatters = s.why_it_matters || s.why_detected || "Cross-domain implications evaluated.";
+          const whatISuggest = s.what_i_suggest || "Review situational context.";
+          const uncertainty = s.uncertainty || "Standard confidence.";
+          const policyAction = s.policy || "BRIEFING";
+          const rawEvidence = s.raw_evidence || s.evidence || [];
+
+          return `
+            <div class="situation-card-rich" style="background: rgba(15, 23, 42, 0.75); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: var(--radius-lg); padding: 1.25rem; margin-bottom: 1.25rem; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.85rem; flex-wrap: wrap; gap: 0.5rem;">
+                <div style="display: flex; align-items: center; gap: 0.6rem;">
+                  <span class="badge badge-prediction" style="font-weight: 700; font-size: 0.75rem;">${escapeHtml(priority)} PRIORITY</span>
+                  <h4 style="font-size: 1.05rem; font-weight: 700; color: #f8fafc; margin: 0;">${escapeHtml(s.title || s.type)}</h4>
+                  <span class="badge ${sitStatus === 'RESOLVED' ? 'badge-fact' : (sitStatus === 'SUPPRESSED' ? 'badge-intervention' : 'badge-recommendation')}">${escapeHtml(sitStatus)}</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                  <span class="badge badge-intervention" style="font-weight: 700;">POLICY: ${escapeHtml(policyAction)}</span>
+                  <button class="btn btn-primary btn-sm" onclick="switchScreen('situation-detail', '${sitId}')">Inspect Reasoning Trace →</button>
+                </div>
+              </div>
+
+              <!-- 6 Core Epistemic Card Fields -->
+              <div style="display: grid; grid-template-columns: 1fr; gap: 0.75rem;">
+                <div style="background: rgba(255,255,255,0.03); border-left: 3px solid #38bdf8; padding: 0.6rem 0.85rem; border-radius: var(--radius-sm);">
+                  <div style="font-size: 0.72rem; font-weight: 700; color: #38bdf8; text-transform: uppercase; margin-bottom: 0.2rem;">📌 WHAT HAPPENED <span class="badge badge-fact" style="font-size: 0.6rem; padding: 0.1rem 0.3rem;">FACT</span></div>
+                  <div style="font-size: 0.88rem; color: #f1f5f9; line-height: 1.4;">${escapeHtml(whatHappened)}</div>
+                </div>
+
+                <div style="background: rgba(255,255,255,0.03); border-left: 3px solid #f59e0b; padding: 0.6rem 0.85rem; border-radius: var(--radius-sm);">
+                  <div style="font-size: 0.72rem; font-weight: 700; color: #f59e0b; text-transform: uppercase; margin-bottom: 0.2rem;">⚠️ WHY IT MATTERS <span class="badge badge-inference" style="font-size: 0.6rem; padding: 0.1rem 0.3rem;">INFERENCE</span></div>
+                  <div style="font-size: 0.88rem; color: #f1f5f9; line-height: 1.4;">${escapeHtml(whyItMatters)}</div>
+                </div>
+
+                <div style="background: rgba(56, 189, 248, 0.08); border-left: 3px solid #a855f7; padding: 0.6rem 0.85rem; border-radius: var(--radius-sm);">
+                  <div style="font-size: 0.72rem; font-weight: 700; color: #c084fc; text-transform: uppercase; margin-bottom: 0.2rem;">👉 WHAT I SUGGEST <span class="badge badge-recommendation" style="font-size: 0.6rem; padding: 0.1rem 0.3rem;">RECOMMENDATION</span></div>
+                  <div style="font-size: 0.92rem; font-weight: 600; color: #fff; line-height: 1.4;">${escapeHtml(whatISuggest)}</div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem;">
+                  <div style="background: rgba(255,255,255,0.02); border-left: 3px solid #10b981; padding: 0.5rem 0.75rem; border-radius: var(--radius-sm);">
+                    <div style="font-size: 0.70rem; font-weight: 700; color: #34d399; text-transform: uppercase; margin-bottom: 0.2rem;">🔗 EVIDENCE <span class="badge badge-fact" style="font-size: 0.58rem; padding: 0.1rem 0.25rem;">PROVENANCE</span></div>
+                    <div style="font-size: 0.76rem; color: #94a3b8; font-family: var(--font-mono); word-break: break-all;">
+                      ${(rawEvidence || []).map(e => typeof e === 'object' ? (e.ref || JSON.stringify(e)) : String(e)).join(" • ") || "Verified ground-truth"}
+                    </div>
+                  </div>
+
+                  <div style="background: rgba(255,255,255,0.02); border-left: 3px solid #ec4899; padding: 0.5rem 0.75rem; border-radius: var(--radius-sm);">
+                    <div style="font-size: 0.70rem; font-weight: 700; color: #f472b6; text-transform: uppercase; margin-bottom: 0.2rem;">⚖️ UNCERTAINTY <span class="badge badge-prediction" style="font-size: 0.58rem; padding: 0.1rem 0.25rem;">PRESERVED</span></div>
+                    <div style="font-size: 0.78rem; color: #cbd5e1; line-height: 1.35;">${escapeHtml(uncertainty)}</div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Interactive Feedback Bar -->
+              <div style="margin-top: 0.85rem; padding-top: 0.6rem; border-top: 1px solid rgba(255,255,255,0.08); display: flex; gap: 0.5rem; align-items: center; justify-content: space-between; flex-wrap: wrap;">
+                <span style="font-size: 0.72rem; color: var(--text-muted); font-family: var(--font-mono); text-transform: uppercase;">
+                  ⚡ User Decision Feedback (Learns Interaction Pattern):
+                </span>
+                <div style="display: flex; gap: 0.4rem; align-items: center;">
+                  <button class="btn btn-action btn-sm" style="background: rgba(34, 197, 94, 0.15); border-color: rgba(34, 197, 94, 0.4); color: #4ade80;" onclick="sendSituationFeedback('${sitId}', 'acknowledge', this)">✅ Accept</button>
+                  <button class="btn btn-action btn-sm" style="background: rgba(234, 179, 8, 0.15); border-color: rgba(234, 179, 8, 0.4); color: #facc15;" onclick="sendSituationFeedback('${sitId}', 'snooze', this)">⏱️ Defer</button>
+                  <button class="btn btn-action btn-sm" style="background: rgba(239, 68, 68, 0.15); border-color: rgba(239, 68, 68, 0.4); color: #f87171;" onclick="sendSituationFeedback('${sitId}', 'dismiss', this)">❌ Dismiss</button>
+                </div>
+              </div>
+            </div>
+          `;
+        }).join("");
+      }
+    }
+
+    // 4. Active Goals
+    const goalsContainer = document.getElementById("overview-goals-container");
+    const goals = data.active_goals || [];
+    const goalsCountEl = document.getElementById("overview-goals-count");
+    if (goalsCountEl) goalsCountEl.textContent = `${goals.length} Active`;
+    if (goalsContainer) {
+      if (goals.length === 0) {
+        goalsContainer.innerHTML = `<p class="state-lead-text" style="color: var(--text-muted);">No active goals logged.</p>`;
+      } else {
+        goalsContainer.innerHTML = goals.map(g => `
+          <div class="pipeline-list-item" style="justify-content: space-between; margin-bottom: 0.4rem;">
+            <div>
+              <div style="font-weight: 600; color: var(--text-primary); font-size: 0.88rem;">${escapeHtml(g.name)}</div>
+              <div style="font-size: 0.76rem; color: var(--text-muted);">${escapeHtml(g.description || "")}</div>
+            </div>
+            <span class="badge badge-recommendation">${escapeHtml(g.priority || "HIGH")}</span>
+          </div>
+        `).join("");
+      }
+    }
+
+    // 5. Active Commitments
+    const commContainer = document.getElementById("overview-commitments-container");
+    const comms = data.upcoming_commitments || [];
+    if (commContainer) {
+      if (comms.length === 0) {
+        commContainer.innerHTML = `<p class="state-lead-text" style="color: var(--text-muted);">No upcoming scheduled commitments.</p>`;
+      } else {
+        commContainer.innerHTML = comms.map(c => `
+          <div class="timeline-item" style="padding: 0.5rem 0.75rem; margin-bottom: 0.4rem;">
+            <div class="timeline-main">
+              <span class="timeline-source-badge ${escapeHtml(c.source)}">${escapeHtml(c.source)}</span>
+              <span style="font-size: 0.82rem; color: var(--text-primary);">${escapeHtml(c.summary)}</span>
+            </div>
+            <span class="timeline-time">${new Date(c.time || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+          </div>
+        `).join("");
+      }
+    }
+  }
 
   // =========================================================================
   // 2.3 Real Google Live Demo Flow & Mode Switcher
@@ -804,41 +1063,72 @@ document.addEventListener("DOMContentLoaded", () => {
 
     container.innerHTML = filtered.map(s => {
       const sitId = s.situation_id || s.id;
-      const sitStatus = (s.status || "open").toUpperCase();
+      const sitStatus = (s.status || "OPEN").toUpperCase();
+      const priority = (s.priority || "HIGH").toUpperCase();
+      const whatHappened = s.what_happened || s.summary || s.context?.summary || "Observation anomaly detected.";
+      const whyItMatters = s.why_it_matters || s.why_detected || "Cross-domain implications evaluated.";
+      const whatISuggest = s.what_i_suggest || "Review situational context.";
+      const uncertainty = s.uncertainty || "Standard confidence.";
+      const policyAction = s.policy || "BRIEFING";
+      const rawEvidence = s.raw_evidence || s.evidence || [];
+
       return `
-        <div class="situation-item" id="card-${escapeHtml(sitId)}">
-          <div class="situation-header">
-            <div>
-              <span class="situation-title">${escapeHtml(s.title || s.type)}</span>
-              <span class="badge ${sitStatus === 'RESOLVED' ? 'badge-fact' : (sitStatus === 'SUPPRESSED' ? 'badge-intervention' : 'badge-prediction')}" style="margin-left: 0.5rem; font-size: 0.68rem;">${sitStatus}</span>
+        <div class="situation-item" id="card-${escapeHtml(sitId)}" style="background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: var(--radius-lg); padding: 1.25rem; margin-bottom: 1.25rem;">
+          <div class="situation-header" style="margin-bottom: 0.85rem;">
+            <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
+              <span class="badge badge-prediction" style="font-weight: 700;">${escapeHtml(priority)} PRIORITY</span>
+              <span class="situation-title" style="font-size: 1.1rem; font-weight: 700; color: #fff;">${escapeHtml(s.title || s.type)}</span>
+              <span class="badge ${sitStatus === 'RESOLVED' ? 'badge-fact' : (sitStatus === 'SUPPRESSED' ? 'badge-intervention' : 'badge-recommendation')}">${sitStatus}</span>
             </div>
             <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
-              <span class="badge badge-prediction">${escapeHtml(s.priority)} PRIORITY</span>
-              <button class="btn btn-primary btn-sm" onclick="switchScreen('situation-detail', '${sitId}')">View Epistemic Flow →</button>
+              <span class="badge badge-intervention" style="font-weight: 700;">POLICY: ${escapeHtml(policyAction)}</span>
+              <button class="btn btn-primary btn-sm" onclick="switchScreen('situation-detail', '${sitId}')">Inspect Reasoning Trace →</button>
               <button class="btn btn-action btn-sm" onclick="triggerSituationInvestigate('${sitId}')">🛠️ Investigate</button>
               <button class="btn btn-action btn-sm" onclick="triggerSituationWhy('${sitId}')">🩺 /pi why</button>
             </div>
           </div>
-          <p class="situation-why"><strong>Why Detected:</strong> ${escapeHtml(s.why_detected || "Multi-stream deviation detected.")}</p>
-          <div class="evidence-provenance-box">
-            <div class="evidence-header">Supporting Ground Truth Evidence <span class="badge badge-fact">FACT</span></div>
-            <div class="evidence-chips">
-              ${(s.evidence || [])
-                .filter(e => {
-                  const str = typeof e === 'object' ? (e.ref || '') : String(e);
-                  return !str.includes("Investigation failed") && !str.includes("external_investigation:") && !str.includes("Observation derived from Hermes");
-                })
-                .map(e => `<span class="chip-evidence">${escapeHtml(typeof e === 'object' ? (e.ref || JSON.stringify(e)) : String(e))}</span>`).join("") || '<span class="chip-evidence">Ground-truth state feature</span>'}
+
+          <!-- 6 Epistemic Card Fields -->
+          <div style="display: grid; grid-template-columns: 1fr; gap: 0.75rem; margin-bottom: 0.85rem;">
+            <div style="background: rgba(255,255,255,0.03); border-left: 3px solid #38bdf8; padding: 0.6rem 0.85rem; border-radius: var(--radius-sm);">
+              <div style="font-size: 0.72rem; font-weight: 700; color: #38bdf8; text-transform: uppercase; margin-bottom: 0.2rem;">📌 WHAT HAPPENED <span class="badge badge-fact" style="font-size: 0.6rem; padding: 0.1rem 0.3rem;">FACT</span></div>
+              <div style="font-size: 0.88rem; color: #f1f5f9; line-height: 1.4;">${escapeHtml(whatHappened)}</div>
+            </div>
+
+            <div style="background: rgba(255,255,255,0.03); border-left: 3px solid #f59e0b; padding: 0.6rem 0.85rem; border-radius: var(--radius-sm);">
+              <div style="font-size: 0.72rem; font-weight: 700; color: #f59e0b; text-transform: uppercase; margin-bottom: 0.2rem;">⚠️ WHY IT MATTERS <span class="badge badge-inference" style="font-size: 0.6rem; padding: 0.1rem 0.3rem;">INFERENCE</span></div>
+              <div style="font-size: 0.88rem; color: #f1f5f9; line-height: 1.4;">${escapeHtml(whyItMatters)}</div>
+            </div>
+
+            <div style="background: rgba(56, 189, 248, 0.08); border-left: 3px solid #a855f7; padding: 0.6rem 0.85rem; border-radius: var(--radius-sm);">
+              <div style="font-size: 0.72rem; font-weight: 700; color: #c084fc; text-transform: uppercase; margin-bottom: 0.2rem;">👉 WHAT I SUGGEST <span class="badge badge-recommendation" style="font-size: 0.6rem; padding: 0.1rem 0.3rem;">RECOMMENDATION</span></div>
+              <div style="font-size: 0.92rem; font-weight: 600; color: #fff; line-height: 1.4;">${escapeHtml(whatISuggest)}</div>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem;">
+              <div style="background: rgba(255,255,255,0.02); border-left: 3px solid #10b981; padding: 0.5rem 0.75rem; border-radius: var(--radius-sm);">
+                <div style="font-size: 0.70rem; font-weight: 700; color: #34d399; text-transform: uppercase; margin-bottom: 0.2rem;">🔗 EVIDENCE <span class="badge badge-fact" style="font-size: 0.58rem; padding: 0.1rem 0.25rem;">PROVENANCE</span></div>
+                <div style="font-size: 0.76rem; color: #94a3b8; font-family: var(--font-mono); word-break: break-all;">
+                  ${(rawEvidence || []).map(e => typeof e === 'object' ? (e.ref || JSON.stringify(e)) : String(e)).join(" • ") || "Verified ground-truth"}
+                </div>
+              </div>
+
+              <div style="background: rgba(255,255,255,0.02); border-left: 3px solid #ec4899; padding: 0.5rem 0.75rem; border-radius: var(--radius-sm);">
+                <div style="font-size: 0.70rem; font-weight: 700; color: #f472b6; text-transform: uppercase; margin-bottom: 0.2rem;">⚖️ UNCERTAINTY <span class="badge badge-prediction" style="font-size: 0.58rem; padding: 0.1rem 0.25rem;">PRESERVED</span></div>
+                <div style="font-size: 0.78rem; color: #cbd5e1; line-height: 1.35;">${escapeHtml(uncertainty)}</div>
+              </div>
             </div>
           </div>
+
+          <!-- Feedback Bar -->
           <div class="situation-feedback-bar" style="margin-top: 0.75rem; padding-top: 0.6rem; border-top: 1px solid rgba(255,255,255,0.08); display: flex; gap: 0.5rem; align-items: center; justify-content: space-between; flex-wrap: wrap;">
             <div style="font-size: 0.72rem; color: var(--text-muted); font-family: var(--font-mono); text-transform: uppercase;">
               ⚡ Interactive Feedback Loop (Learns Preferences):
             </div>
             <div style="display: flex; gap: 0.4rem; align-items: center;">
-              <button class="btn btn-action btn-sm" style="background: rgba(34, 197, 94, 0.15); border-color: rgba(34, 197, 94, 0.4); color: #4ade80;" onclick="sendSituationFeedback('${sitId}', 'acknowledge', this)" title="Acknowledge and mark resolved">✅ Acknowledged</button>
-              <button class="btn btn-action btn-sm" style="background: rgba(234, 179, 8, 0.15); border-color: rgba(234, 179, 8, 0.4); color: #facc15;" onclick="sendSituationFeedback('${sitId}', 'snooze', this)" title="Snooze alerts for 2 days">⏱️ Snooze 2 Days</button>
-              <button class="btn btn-action btn-sm" style="background: rgba(239, 68, 68, 0.15); border-color: rgba(239, 68, 68, 0.4); color: #f87171;" onclick="sendSituationFeedback('${sitId}', 'dismiss', this)" title="Dismiss and train PatternLearningEngine to auto-suppress similar items">❌ Not Relevant</button>
+              <button class="btn btn-action btn-sm" style="background: rgba(34, 197, 94, 0.15); border-color: rgba(34, 197, 94, 0.4); color: #4ade80;" onclick="sendSituationFeedback('${sitId}', 'acknowledge', this)">✅ Accept</button>
+              <button class="btn btn-action btn-sm" style="background: rgba(234, 179, 8, 0.15); border-color: rgba(234, 179, 8, 0.4); color: #facc15;" onclick="sendSituationFeedback('${sitId}', 'snooze', this)">⏱️ Defer</button>
+              <button class="btn btn-action btn-sm" style="background: rgba(239, 68, 68, 0.15); border-color: rgba(239, 68, 68, 0.4); color: #f87171;" onclick="sendSituationFeedback('${sitId}', 'dismiss', this)">❌ Dismiss</button>
             </div>
           </div>
         </div>
@@ -879,14 +1169,11 @@ document.addEventListener("DOMContentLoaded", () => {
           fetchSituationDetail(situationId);
         }
       } else {
-        alert("Feedback error: " + (data.error || data.message || "Failed to record feedback."));
-        if (btnElement) {
-          btnElement.disabled = false;
-          btnElement.innerHTML = originalText;
-        }
+        alert("Error saving feedback: " + (data.message || "Unknown error"));
       }
     } catch (err) {
-      alert("Network error applying feedback: " + err.message);
+      alert("Error submitting feedback: " + err.message);
+    } finally {
       if (btnElement) {
         btnElement.disabled = false;
         btnElement.innerHTML = originalText;
@@ -913,15 +1200,26 @@ document.addEventListener("DOMContentLoaded", () => {
       const res = await fetch(url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+      
+      // Also fetch dedicated reasoning trace payload
+      let traceData = null;
+      try {
+        const tUrl = situationId ? `/api/pi/reasoning_trace?situation_id=${situationId}` : `/api/pi/reasoning_trace`;
+        const tRes = await fetch(tUrl);
+        if (tRes.ok) traceData = await tRes.json();
+      } catch (e) {
+        // Fall back to embedded trace
+      }
+
       hideError();
-      renderSituationDetailFlow(data);
+      renderSituationDetailFlow(data, traceData);
     } catch (err) {
       console.error("fetchSituationDetail error:", err);
       showError("Could not fetch Situation Detail flow: " + err.message);
     }
   }
 
-  function renderSituationDetailFlow(data) {
+  function renderSituationDetailFlow(data, traceData = null) {
     if (!pipelineContainer) return;
     if (!data) {
       pipelineContainer.innerHTML = `<div class="loading-skeleton">No situation data available to render detail screen.</div>`;
@@ -937,6 +1235,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const investigation = data.investigation || { calls: [] };
     const reasoning = data.reasoning || { facts: [], inferences: [], predictions: [], uncertainties: [], recommendation: {} };
     const intervention = data.intervention || { selected_action: "BRIEFING", all_actions: ["INTERRUPT", "BRIEFING", "DEFER", "SUPPRESS", "DISCARD"], reason: "Policy evaluation." };
+    const traceSteps = (traceData && traceData.steps) ? traceData.steps : [];
 
     pipelineContainer.innerHTML = `
       <!-- 1. HEADER -->
@@ -959,21 +1258,49 @@ document.addEventListener("DOMContentLoaded", () => {
           <span><strong>Priority:</strong> ${escapeHtml(header.priority || "HIGH")}</span>
           <span><strong>Novelty Score:</strong> ${(header.novelty_score || 0).toFixed(2)}</span>
           <span><strong>Detected At:</strong> ${escapeHtml(header.detected_at || "")}</span>
-          <span><strong>Bounded Investigation:</strong> Real-only read capabilities</span>
+          <span><strong>Bounded Investigation:</strong> Read-only Hermes capabilities</span>
         </div>
         <div style="margin-top: 0.75rem; padding-top: 0.6rem; border-top: 1px solid rgba(255,255,255,0.08); display: flex; gap: 0.5rem; align-items: center; justify-content: space-between; flex-wrap: wrap;">
           <span style="font-size: 0.72rem; color: var(--text-muted); font-family: var(--font-mono); text-transform: uppercase;">
             Interactive Feedback Loop:
           </span>
           <div style="display: flex; gap: 0.4rem; align-items: center;">
-            <button class="btn btn-action btn-sm" style="background: rgba(34, 197, 94, 0.15); border-color: rgba(34, 197, 94, 0.4); color: #4ade80;" onclick="sendSituationFeedback('${data.situation_id}', 'acknowledge', this)" title="Acknowledge and mark resolved">✅ Acknowledged</button>
-            <button class="btn btn-action btn-sm" style="background: rgba(234, 179, 8, 0.15); border-color: rgba(234, 179, 8, 0.4); color: #facc15;" onclick="sendSituationFeedback('${data.situation_id}', 'snooze', this)" title="Snooze alerts for 2 days">⏱️ Snooze 2 Days</button>
-            <button class="btn btn-action btn-sm" style="background: rgba(239, 68, 68, 0.15); border-color: rgba(239, 68, 68, 0.4); color: #f87171;" onclick="sendSituationFeedback('${data.situation_id}', 'dismiss', this)" title="Dismiss and train PatternLearningEngine to auto-suppress similar items">❌ Not Relevant</button>
+            <button class="btn btn-action btn-sm" style="background: rgba(34, 197, 94, 0.15); border-color: rgba(34, 197, 94, 0.4); color: #4ade80;" onclick="sendSituationFeedback('${data.situation_id}', 'acknowledge', this)">✅ Accept</button>
+            <button class="btn btn-action btn-sm" style="background: rgba(234, 179, 8, 0.15); border-color: rgba(234, 179, 8, 0.4); color: #facc15;" onclick="sendSituationFeedback('${data.situation_id}', 'snooze', this)">⏱️ Defer</button>
+            <button class="btn btn-action btn-sm" style="background: rgba(239, 68, 68, 0.15); border-color: rgba(239, 68, 68, 0.4); color: #f87171;" onclick="sendSituationFeedback('${data.situation_id}', 'dismiss', this)">❌ Dismiss</button>
           </div>
         </div>
       </div>
 
-      <!-- 2. EVIDENCE GRAPH -->
+      <!-- 2. REASONING TRACE (9-STAGE EPISTEMIC PROGRESSION) -->
+      ${traceSteps.length > 0 ? `
+        <div class="pipeline-node">
+          <div class="pipeline-node-header">
+            <div class="pipeline-node-title-group">
+              <span class="pipeline-step-badge">REASONING TRACE</span>
+              <h3 class="pipeline-node-title">Deterministic 9-Stage Epistemic Progression</h3>
+            </div>
+            <span class="badge badge-fact">NO CHAIN-OF-THOUGHT DUMP</span>
+          </div>
+          <div class="pipeline-node-body">
+            <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+              ${traceSteps.map((st, idx) => `
+                <div style="background: rgba(255,255,255,0.02); border-left: 3px solid #38bdf8; border-radius: var(--radius-sm); padding: 0.65rem 0.85rem; display: flex; justify-content: space-between; align-items: flex-start; gap: 0.75rem;">
+                  <div style="flex: 1;">
+                    <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem;">
+                      <span style="font-size: 0.72rem; font-weight: 700; color: #38bdf8; font-family: var(--font-mono);">${idx + 1}. ${escapeHtml(st.title || st.stage)}</span>
+                      <span class="badge ${st.badge_class || 'badge-fact'}" style="font-size: 0.6rem; padding: 0.1rem 0.3rem;">${escapeHtml(st.badge || st.stage)}</span>
+                    </div>
+                    <div style="font-size: 0.84rem; color: #f1f5f9; line-height: 1.4;">${escapeHtml(st.content || "")}</div>
+                  </div>
+                </div>
+              `).join("")}
+            </div>
+          </div>
+        </div>
+      ` : ""}
+
+      <!-- 3. EVIDENCE GRAPH -->
       <div class="pipeline-node">
         <div class="pipeline-node-header">
           <div class="pipeline-node-title-group">
@@ -1003,7 +1330,7 @@ document.addEventListener("DOMContentLoaded", () => {
         </div>
       </div>
 
-      <!-- 3. TIMELINE -->
+      <!-- 4. TIMELINE -->
       <div class="pipeline-node">
         <div class="pipeline-node-header">
           <div class="pipeline-node-title-group">
@@ -1027,7 +1354,7 @@ document.addEventListener("DOMContentLoaded", () => {
         </div>
       </div>
 
-      <!-- 4. HERMES INVESTIGATION -->
+      <!-- 5. HERMES INVESTIGATION -->
       <div class="pipeline-node">
         <div class="pipeline-node-header">
           <div class="pipeline-node-title-group">
@@ -1051,7 +1378,7 @@ document.addEventListener("DOMContentLoaded", () => {
         </div>
       </div>
 
-      <!-- 5. REASONING -->
+      <!-- 6. REASONING -->
       <div class="pipeline-node">
         <div class="pipeline-node-header">
           <div class="pipeline-node-title-group">
@@ -1128,7 +1455,7 @@ document.addEventListener("DOMContentLoaded", () => {
         </div>
       </div>
 
-      <!-- 6. INTERVENTION -->
+      <!-- 7. INTERVENTION -->
       <div class="pipeline-node">
         <div class="pipeline-node-header">
           <div class="pipeline-node-title-group">
@@ -1199,43 +1526,61 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  function renderPatternsScreen(patterns) {
+  function renderPatternsScreen(data) {
     const container = document.getElementById("patterns-screen-container");
     if (!container) return;
 
-    if (!patterns || patterns.length === 0) {
-      container.innerHTML = `<p class="state-lead-text" style="color: var(--text-muted); padding: 1.5rem;">No learned interaction patterns recorded.</p>`;
+    // Handle both categorized dictionary and flat array
+    let patternsList = [];
+    if (Array.isArray(data)) {
+      patternsList = data;
+    } else if (data && typeof data === "object") {
+      const active = data.active || [];
+      const supported = data.supported || [];
+      const emerging = data.emerging || [];
+      const decaying = data.decaying || [];
+      patternsList = [...active, ...supported, ...emerging, ...decaying];
+    }
+
+    if (!patternsList || patternsList.length === 0) {
+      container.innerHTML = `<p class="state-lead-text" style="color: var(--text-muted); padding: 1.5rem;">No learned longitudinal patterns discovered yet. System continuously tracks empirical regularities.</p>`;
       return;
     }
 
-    container.innerHTML = patterns.map(p => `
-      <div class="pattern-item">
-        <div class="pattern-header">
-          <span class="pattern-description">${escapeHtml(p.description)}</span>
-          <span class="badge badge-fact">${escapeHtml(p.status || "ACTIVE")}</span>
+    container.innerHTML = patternsList.map(p => {
+      const status = (p.status || "EMERGING").toUpperCase();
+      const statusClass = status === "ACTIVE" ? "badge-fact" : (status === "SUPPORTED" ? "badge-recommendation" : (status === "DECAYING" ? "badge-intervention" : "badge-prediction"));
+      const ratio = p.confidence_ratio || `${Math.round((p.support_count || 1) / Math.max(1, (p.support_count || 1) + (p.contradiction_count || 0)) * 100)}%`;
+
+      return `
+        <div class="pattern-item" style="background: rgba(15, 23, 42, 0.75); border: 1px solid rgba(56, 189, 248, 0.2); border-radius: var(--radius-lg); padding: 1.25rem;">
+          <div class="pattern-header" style="display: flex; justify-content: space-between; align-items: flex-start; gap: 0.5rem; margin-bottom: 0.75rem;">
+            <span class="pattern-description" style="font-weight: 600; color: #fff; font-size: 0.95rem; line-height: 1.4;">${escapeHtml(p.description || "Observed association")}</span>
+            <span class="badge ${statusClass}">${escapeHtml(status)}</span>
+          </div>
+          <div class="pattern-metrics" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; margin-bottom: 0.75rem;">
+            <div class="pattern-metric">
+              <span class="pattern-metric-val">${p.support_count || 0}</span>
+              <span class="pattern-metric-label">Support</span>
+            </div>
+            <div class="pattern-metric">
+              <span class="pattern-metric-val">${p.contradiction_count || 0}</span>
+              <span class="pattern-metric-label">Contradictions</span>
+            </div>
+            <div class="pattern-metric">
+              <span class="pattern-metric-val">${escapeHtml(ratio)}</span>
+              <span class="pattern-metric-label">Empirical Ratio</span>
+            </div>
+          </div>
+          <div class="pattern-provenance">
+            <span class="provenance-title" style="font-size: 0.72rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase;">Observed Associations & Provenance:</span>
+            <div class="provenance-chips" style="margin-top: 0.3rem;">
+              ${(p.evidence_provenance || p.provenance || []).map(ep => `<span class="chip-provenance">${escapeHtml(typeof ep === 'object' ? JSON.stringify(ep) : String(ep))}</span>`).join("") || '<span class="chip-provenance">Longitudinal tracking episode</span>'}
+            </div>
+          </div>
         </div>
-        <div class="pattern-metrics">
-          <div class="pattern-metric">
-            <span class="pattern-metric-val">${p.support_count || 0}</span>
-            <span class="pattern-metric-label">Support</span>
-          </div>
-          <div class="pattern-metric">
-            <span class="pattern-metric-val">${p.contradiction_count || 0}</span>
-            <span class="pattern-metric-label">Contradictions</span>
-          </div>
-          <div class="pattern-metric">
-            <span class="pattern-metric-val">${escapeHtml(p.confidence_ratio || "100%")}</span>
-            <span class="pattern-metric-label">Empirical Ratio</span>
-          </div>
-        </div>
-        <div class="pattern-provenance">
-          <span class="provenance-title">Provenance Episodes:</span>
-          <div class="provenance-chips">
-            ${(p.evidence_provenance || []).map(ep => `<span class="chip-provenance">${escapeHtml(ep)}</span>`).join("")}
-          </div>
-        </div>
-      </div>
-    `).join("");
+      `;
+    }).join("");
   }
 
   // =========================================================================

@@ -170,6 +170,63 @@ class InvestigationTerminationReason(str, Enum):
 
 
 @dataclass
+class BoundedInvestigationRequest:
+    """
+    Standardized bounded investigation request structure submitted by Personal Intelligence to Hermes.
+    Specifies bounded objectives and information gaps without passing the full world model.
+    """
+    situation_id: str
+    objective: str
+    information_gaps: List[str] = field(default_factory=list)
+    allowed_capabilities: List[str] = field(default_factory=lambda: ["gmail", "drive", "calendar", "meet", "filesystem"])
+    max_rounds: int = 3
+    max_tool_calls: int = 5
+    read_only: bool = True
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        if not self.situation_id or not isinstance(self.situation_id, str):
+            raise ValueError("situation_id must be a non-empty string.")
+        if not self.objective or not isinstance(self.objective, str):
+            raise ValueError("objective must be a non-empty string.")
+        if not isinstance(self.information_gaps, list):
+            raise ValueError("information_gaps must be a list of strings.")
+        if not isinstance(self.allowed_capabilities, list):
+            raise ValueError("allowed_capabilities must be a list of strings.")
+        if not (1 <= self.max_rounds <= 10):
+            raise ValueError(f"max_rounds must be between 1 and 10, got {self.max_rounds}.")
+        if not (1 <= self.max_tool_calls <= 20):
+            raise ValueError(f"max_tool_calls must be between 1 and 20, got {self.max_tool_calls}.")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "situation_id": self.situation_id,
+            "objective": self.objective,
+            "information_gaps": self.information_gaps,
+            "allowed_capabilities": self.allowed_capabilities,
+            "max_rounds": self.max_rounds,
+            "max_tool_calls": self.max_tool_calls,
+            "read_only": self.read_only,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "BoundedInvestigationRequest":
+        if not isinstance(data, dict):
+            raise ValueError("Expected dictionary for BoundedInvestigationRequest.")
+        return cls(
+            situation_id=data.get("situation_id", ""),
+            objective=data.get("objective", ""),
+            information_gaps=data.get("information_gaps", []),
+            allowed_capabilities=data.get("allowed_capabilities", ["gmail", "drive", "calendar", "meet", "filesystem"]),
+            max_rounds=int(data.get("max_rounds", 3)),
+            max_tool_calls=int(data.get("max_tool_calls", 5)),
+            read_only=bool(data.get("read_only", True)),
+        )
+
+
+@dataclass
 class InvestigationPlan:
     """
     Plan constructed during Phase 1 (Gap Assessment).
@@ -189,6 +246,18 @@ class InvestigationPlan:
     max_context_size: int = 32000
     required_output_schema: Dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    def to_bounded_request(self) -> BoundedInvestigationRequest:
+        """Converts plan into a standardized BoundedInvestigationRequest."""
+        return BoundedInvestigationRequest(
+            situation_id=self.situation_id,
+            objective=self.information_gap or self.investigation_target,
+            information_gaps=self.unknowns,
+            allowed_capabilities=self.preferred_capabilities or self.relevant_hermes_sources or ["gmail", "drive", "calendar", "meet", "filesystem"],
+            max_rounds=self.max_rounds,
+            max_tool_calls=self.max_tool_calls,
+            read_only=True,
+        )
 
     def to_investigation_task_kwargs(self) -> Dict[str, Any]:
         """Returns kwargs to pass to InvestigationTask / InformationGapRequest constructor."""
@@ -226,6 +295,7 @@ class InvestigationOutcome:
     rounds_executed: int = 1
     total_tool_calls: int = 0
     termination_reason: str = InvestigationTerminationReason.GAP_RESOLVED.value
+    investigation_status: str = "COMPLETE"  # COMPLETE | INCOMPLETE | FAILED
     requires_user_input: bool = False
     contradiction_notes: List[str] = field(default_factory=list)
 
@@ -236,6 +306,7 @@ class InvestigationOutcome:
             "plan_unknowns": self.plan.unknowns,
             "investigation_succeeded": self.investigation_succeeded,
             "gap_resolved": self.gap_resolved,
+            "investigation_status": self.investigation_status,
             "evidence_observations_recorded": self.evidence_observations_recorded,
             "remaining_unknowns": self.remaining_unknowns,
             "rounds_executed": self.rounds_executed,
@@ -540,6 +611,13 @@ class SituationInvestigator:
             goals=goals_list,
         )
 
+        if gap_resolved:
+            inv_status = "COMPLETE"
+        elif not any(r.is_valid for r in all_results):
+            inv_status = "FAILED"
+        else:
+            inv_status = "INCOMPLETE"
+
         return InvestigationOutcome(
             situation=current_situation,
             plan=plan,
@@ -553,6 +631,7 @@ class SituationInvestigator:
             rounds_executed=rounds_executed,
             total_tool_calls=total_tool_calls,
             termination_reason=termination_reason,
+            investigation_status=inv_status,
             requires_user_input=requires_user_input,
             contradiction_notes=contradiction_notes,
         )
@@ -612,9 +691,20 @@ class SituationInvestigator:
 
 
 
-    # ------------------------------------------------------------------
-    # Phase 1: Gap Assessment
-    # ------------------------------------------------------------------
+    def assess_gap(
+        self,
+        situation: Situation,
+        goals: Optional[List[Goal]] = None,
+        reference_time: Optional[datetime] = None,
+    ) -> InvestigationPlan:
+        """
+        Public entry point for Phase 1 Gap Assessment.
+        Extracts known facts and builds an InvestigationPlan for a situation.
+        """
+        ref_dt = ensure_timezone_aware(
+            reference_time or datetime.now(timezone.utc), "reference_time"
+        )
+        return self._assess_gaps(situation, goals or [], ref_dt)
 
     def _assess_gaps(
         self,

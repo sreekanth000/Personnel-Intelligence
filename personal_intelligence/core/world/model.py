@@ -53,6 +53,10 @@ from personal_intelligence.core.timeline.engine import TimelineEngine
 
 from personal_intelligence.core.world.graph import EntityGraphStore, EntityNode, EntityEdge
 from personal_intelligence.core.world.simulator import WorldModelSimulator, SimulationResult
+from personal_intelligence.core.world.predictive import PredictiveProcessingEngine, ExpectedState
+from personal_intelligence.core.world.person_model import PersonModelEngine, PersonEntity
+from personal_intelligence.core.patterns.compaction import HippocampalCompactor, CompactionSummary
+from personal_intelligence.core.world.mcts_simulator import MCTSWorldSimulator, MCTSTreeResult
 
 from personal_intelligence.core.world.models import (
     Commitment,
@@ -95,12 +99,12 @@ class PersonalWorldModel:
         self.episode_store = self.local_store.episode_store
 
         self.graph_store = EntityGraphStore(db_manager=self.db_manager)
+        self.relationship_store = self.graph_store  # TemporalEntityRelationshipModel
         self.timeline_engine = TimelineEngine(event_store=self.event_store)
         self.goal_engine = GoalEngine(
             goal_store=self.goal_store,
             timeline_engine=self.timeline_engine,
         )
-        self.simulator = WorldModelSimulator(goal_engine=self.goal_engine)
         self.state_engine = StateEngine(
             timeline_engine=self.timeline_engine,
             goal_store=self.goal_store,
@@ -109,6 +113,16 @@ class PersonalWorldModel:
             pattern_store=self.pattern_store,
             db_manager=self.db_manager,
         )
+
+        from personal_intelligence.core.significance import PersonalSignificanceEngine
+        self.significance_engine = PersonalSignificanceEngine()
+
+        # Deferred/Experimental Research Engines (Retained for backward compatibility)
+        self.predictive_engine = PredictiveProcessingEngine(db_manager=self.db_manager)
+        self.person_model_engine = PersonModelEngine(db_manager=self.db_manager)
+        self.hippocampal_compactor = HippocampalCompactor(db_manager=self.db_manager)
+        self.mcts_simulator = MCTSWorldSimulator()
+        self.simulator = WorldModelSimulator(goal_engine=self.goal_engine)
 
 
     # -------------------------------------------------------------------------
@@ -244,6 +258,11 @@ class PersonalWorldModel:
             metadata=metadata or {},
         )
         self.entity_store.upsert(entity)
+        self.graph_store.record_commitment(
+            commitment,
+            project_id=(metadata or {}).get("project_id"),
+            meeting_id=(metadata or {}).get("meeting_id"),
+        )
         return commitment
 
     def resolve_commitment(
@@ -252,7 +271,7 @@ class PersonalWorldModel:
         status: str = CommitmentStatus.COMPLETED.value,
         resolution_notes: Optional[str] = None,
     ) -> Optional[Commitment]:
-        """Updates status of a commitment in entity_state."""
+        """Updates status of a commitment in entity_state and graph_store."""
         entity = self.entity_store.get(commitment_id)
         if not entity or entity.entity_type != "commitment":
             return None
@@ -267,6 +286,7 @@ class PersonalWorldModel:
         entity.state = commit_data
         entity.last_updated_at = now
         self.entity_store.upsert(entity)
+        self.graph_store.update_commitment_status(commitment_id, status)
         return Commitment.from_dict(commit_data)
 
     def record_open_issue(
@@ -979,3 +999,24 @@ class PersonalWorldModel:
             return decayed_count
         finally:
             conn.close()
+
+    def evaluate_prediction_error(self, actual_event: Event) -> float:
+        """Computes top-down prediction error delta for incoming observation."""
+        return self.predictive_engine.calculate_prediction_error(actual_event)
+
+    def evaluate_person_urgency(self, sender_name: str, message_summary: str = "") -> float:
+        """Computes Theory of Mind interpersonal urgency multiplier for sender."""
+        return self.person_model_engine.evaluate_interpersonal_urgency(sender_name, message_summary)
+
+    def run_mcts_tree_search(self, situation_id: str, scenario_title: str) -> MCTSTreeResult:
+        """Executes multi-step Monte Carlo Tree Search and Pareto utility evaluation."""
+        base_snapshot = self.get_snapshot()
+        return self.mcts_simulator.evaluate_decision_tree(
+            situation_id=situation_id,
+            scenario_title=scenario_title,
+            base_snapshot=base_snapshot,
+        )
+
+    def compact_memory_schema(self, hours_back: int = 24) -> CompactionSummary:
+        """Runs hippocampal memory compaction over recent event logs."""
+        return self.hippocampal_compactor.compact_memory(hours_back=hours_back)

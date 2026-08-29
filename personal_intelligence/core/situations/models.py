@@ -16,6 +16,40 @@ from personal_intelligence.core.events.models import (
 )
 
 
+import hashlib
+
+
+class SituationFreshness(str, Enum):
+    """Situation freshness category for policy tie-breakers."""
+    FRESH = "FRESH"   # Material evidence or change within 24h
+    AGING = "AGING"   # Relevant but unchanged for 24h to 7d
+    STALE = "STALE"   # Exceeded 7d without material change
+
+
+def compute_deterministic_situation_identity(
+    situation_type: str,
+    primary_entity_ids: Optional[List[str]] = None,
+    goal_ids: Optional[List[str]] = None,
+    trigger_origin_ids: Optional[List[str]] = None,
+) -> str:
+    """
+    Generates a deterministic normalized identity hash from:
+      - situation_type
+      - primary_entity_ids (sorted)
+      - goal_ids (sorted)
+      - trigger_origin_ids (sorted)
+
+    Used strictly for deduplication without LLM calls.
+    """
+    norm_type = str(situation_type or "").strip().lower()
+    norm_entities = sorted(str(e).strip().lower() for e in (primary_entity_ids or []) if e)
+    norm_goals = sorted(str(g).strip().lower() for g in (goal_ids or []) if g)
+    norm_triggers = sorted(str(t).strip().lower() for t in (trigger_origin_ids or []) if t)
+
+    key_str = f"{norm_type}|{','.join(norm_entities)}|{','.join(norm_goals)}|{','.join(norm_triggers)}"
+    return hashlib.sha256(key_str.encode("utf-8")).hexdigest()
+
+
 class SituationPriority(str, Enum):
     """Priority categorization for situations."""
     CRITICAL = "critical"
@@ -57,6 +91,7 @@ class SituationStatus(str, Enum):
     CLOSED = "closed"
     EXPIRED = "expired"
     SUPPRESSED = "suppressed"
+    DISMISSED = "dismissed"
 
     # Aliases for backwards compatibility
     INVESTIGATING = "monitoring"
@@ -104,6 +139,7 @@ class Situation:
             SituationStatus.CLOSED.value,
             SituationStatus.EXPIRED.value,
             SituationStatus.SUPPRESSED.value,
+            SituationStatus.DISMISSED.value,
             "investigating",
         }
         if isinstance(self.status, SituationStatus):
@@ -178,6 +214,43 @@ class Situation:
         self.status = SituationStatus.RESOLVED.value
         self.next_evaluation_at = None
         self.updated_at = datetime.now(timezone.utc)
+
+    def get_deterministic_identity(self) -> str:
+        """Computes deterministic normalized SHA256 identity for deduplication."""
+        primary_entities = self.context.get("primary_entity_ids") or self.context.get("entity_ids") or []
+        if isinstance(primary_entities, str):
+            primary_entities = [primary_entities]
+        triggers = self.context.get("trigger_origin_ids") or self.context.get("event_ids") or []
+        if isinstance(triggers, str):
+            triggers = [triggers]
+        return compute_deterministic_situation_identity(
+            situation_type=self.type,
+            primary_entity_ids=primary_entities,
+            goal_ids=self.related_goals,
+            trigger_origin_ids=triggers,
+        )
+
+    def compute_freshness(
+        self,
+        as_of: Optional[datetime] = None,
+        fresh_window_hours: float = 24.0,
+        aging_window_days: float = 7.0,
+    ) -> SituationFreshness:
+        """
+        Computes deterministic situation freshness:
+          FRESH: Material evidence or change within 24h
+          AGING: 24h to 7d without material change
+          STALE: > 7d without material change
+        """
+        ref = ensure_timezone_aware(as_of or datetime.now(timezone.utc), "as_of")
+        time_since_update = max(0.0, (ref - self.updated_at).total_seconds())
+        hours_since_update = time_since_update / 3600.0
+
+        if hours_since_update <= fresh_window_hours:
+            return SituationFreshness.FRESH
+        if hours_since_update <= aging_window_days * 24.0:
+            return SituationFreshness.AGING
+        return SituationFreshness.STALE
 
     def suppress(self, suppress_until: Optional[datetime] = None) -> None:
         """Marks the situation as SUPPRESSED."""

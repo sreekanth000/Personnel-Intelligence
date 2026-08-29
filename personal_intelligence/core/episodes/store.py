@@ -49,12 +49,14 @@ class EpisodeStore:
         created_at_dt = ensure_timezone_aware(row["created_at"], "created_at")
         follow_up_raw = row["follow_up_at"]
         follow_up_dt = ensure_timezone_aware(follow_up_raw, "follow_up_at") if follow_up_raw else None
+        ctx = safe_json_load(row["context_snapshot_json"], {})
+        telemetry = ctx.get("_telemetry", {}) if isinstance(ctx, dict) else {}
 
         return ReasoningEpisode(
             id=row["id"],
             situation_id=row["situation_id"],
             created_at=created_at_dt,
-            context_snapshot=safe_json_load(row["context_snapshot_json"], {}),
+            context_snapshot=ctx,
             observations=safe_json_load(row["observations_json"], []),
             inferences=safe_json_load(row["inferences_json"], []),
             predictions=safe_json_load(row["predictions_json"], []),
@@ -70,6 +72,13 @@ class EpisodeStore:
             outcome=safe_json_load(row["outcome_json"], None),
             follow_up_at=follow_up_dt,
             status=row["status"],
+            reason_for_invocation=telemetry.get("reason_for_invocation"),
+            reasoning_budget=telemetry.get("reasoning_budget"),
+            context_size=telemetry.get("context_size"),
+            investigation_rounds=telemetry.get("investigation_rounds", 0),
+            tool_calls=telemetry.get("tool_calls", 0),
+            execution_time_ms=telemetry.get("execution_time_ms"),
+            reason_code=telemetry.get("reason_code"),
         )
 
     def create_episode(
@@ -143,6 +152,14 @@ class EpisodeStore:
                 ctx["evidence"] = [str(e) for e in evidence] if isinstance(evidence, list) else [str(evidence)]
             if provenance:
                 ctx["provenance"] = provenance
+
+            # Preserve invocation telemetry in context snapshot
+            telemetry = dict(ctx.get("_telemetry", {})) if isinstance(ctx.get("_telemetry"), dict) else {}
+            for k in ["reason_for_invocation", "reasoning_budget", "context_size", "investigation_rounds", "tool_calls", "execution_time_ms", "reason_code"]:
+                if k in kwargs and kwargs[k] is not None:
+                    telemetry[k] = kwargs[k]
+            if telemetry:
+                ctx["_telemetry"] = telemetry
 
             stat_val = parse_status or status
             if stat_val == "unparseable_reasoning" or stat_val == "unparseable":
@@ -476,6 +493,16 @@ class EpisodeStore:
             new_ctx["evidence"] = [str(e) for e in evidence] if isinstance(evidence, list) else [str(evidence)]
         if provenance:
             new_ctx["provenance"] = provenance
+
+        # Preserve invocation telemetry in context snapshot
+        telemetry = dict(new_ctx.get("_telemetry", {})) if isinstance(new_ctx.get("_telemetry"), dict) else {}
+        for k in ["reason_for_invocation", "reasoning_budget", "context_size", "investigation_rounds", "tool_calls", "execution_time_ms", "reason_code"]:
+            if k in kwargs and kwargs[k] is not None:
+                telemetry[k] = kwargs[k]
+            elif hasattr(existing, k) and getattr(existing, k) is not None:
+                telemetry[k] = getattr(existing, k)
+        if telemetry:
+            new_ctx["_telemetry"] = telemetry
 
         new_obs = observations_used or observations if (observations_used is not None or observations is not None) else (meta.get("observations") or meta.get("observations_used") or existing.observations)
         new_inf = inferences if inferences is not None else (meta.get("inferences") or existing.inferences)

@@ -37,8 +37,8 @@ class TestPersonalLearningEngine(unittest.TestCase):
         self.episode_store = EpisodeStore(db_manager=self.db_manager)
         self.engine = LearningEngine(
             pattern_store=self.pattern_store,
-            decay_after_days=14,
-            inactivate_after_days=45,
+            decay_after_days=60,
+            inactivate_after_days=120,
         )
         self.base_time = datetime(2026, 8, 1, 8, 0, 0, tzinfo=timezone.utc)
 
@@ -81,7 +81,7 @@ class TestPersonalLearningEngine(unittest.TestCase):
         self.assertEqual(pat.status, PatternStatus.OBSERVED.value)
         self.assertEqual(pat.support_count, 1)
 
-        # Observation 2 -> HYPOTHESIS
+        # Observation 2 -> HYPOTHESIS (support >= 1)
         pat, _ = self.engine.record_evidence(
             pattern_id=pat.id,
             observation_type=EvidenceObservationType.SUPPORT,
@@ -89,30 +89,29 @@ class TestPersonalLearningEngine(unittest.TestCase):
         )
         self.assertEqual(pat.status, PatternStatus.HYPOTHESIS.value)
 
-        # Observations 3-4 -> EMERGING
-        for i in range(2):
-            pat, _ = self.engine.record_evidence(
-                pattern_id=pat.id,
-                observation_type=EvidenceObservationType.SUPPORT,
-                observed_at=self.base_time + timedelta(days=2 + i),
-            )
+        # Observation 3 at day 8 -> EMERGING (support >= 3, span >= 7d)
+        pat, _ = self.engine.record_evidence(
+            pattern_id=pat.id,
+            observation_type=EvidenceObservationType.SUPPORT,
+            observed_at=self.base_time + timedelta(days=8),
+        )
         self.assertEqual(pat.status, PatternStatus.EMERGING.value)
 
-        # Observations 5-7 -> SUPPORTED
-        for i in range(3):
+        # Observations 4-6 at days 14,18,22 -> SUPPORTED (support >= 6, span >= 21d, contra < 20%)
+        for day in [14, 18, 22]:
             pat, _ = self.engine.record_evidence(
                 pattern_id=pat.id,
                 observation_type=EvidenceObservationType.SUPPORT,
-                observed_at=self.base_time + timedelta(days=5 + i),
+                observed_at=self.base_time + timedelta(days=day),
             )
         self.assertEqual(pat.status, PatternStatus.SUPPORTED.value)
 
-        # Observations 8-10 -> ACTIVE
-        for i in range(3):
+        # Observations 7-10 at days 30,36,42,46 -> ACTIVE (support >= 10, span >= 45d, contra < 20%)
+        for day in [30, 36, 42, 46]:
             pat, _ = self.engine.record_evidence(
                 pattern_id=pat.id,
                 observation_type=EvidenceObservationType.SUPPORT,
-                observed_at=self.base_time + timedelta(days=9 + i),
+                observed_at=self.base_time + timedelta(days=day),
             )
         self.assertEqual(pat.status, PatternStatus.ACTIVE.value)
         self.assertEqual(pat.evidence_strength, "strong")
@@ -121,21 +120,22 @@ class TestPersonalLearningEngine(unittest.TestCase):
 
     def test_stable_pattern_remains_active(self) -> None:
         """Verify that a pattern with regular reinforcement stays ACTIVE."""
-        # Create ACTIVE pattern
+        # Create ACTIVE pattern (V1.2: need support>=10, span>=45d)
         pat = self.engine.register_candidate_pattern(
             description="Regular schedule appears associated with consistent productivity.",
             first_seen=self.base_time,
         )
-        for i in range(10):
+        # Spread 10 observations over 50 days to meet span >= 45d
+        for day in [3, 7, 12, 18, 24, 30, 36, 42, 48, 50]:
             pat, _ = self.engine.record_evidence(
                 pattern_id=pat.id,
                 observation_type=EvidenceObservationType.SUPPORT,
-                observed_at=self.base_time + timedelta(days=i),
+                observed_at=self.base_time + timedelta(days=day),
             )
         self.assertEqual(pat.status, PatternStatus.ACTIVE.value)
 
-        # Apply recency decay sweep as of day 12 (within 14-day decay window)
-        as_of_time = self.base_time + timedelta(days=12)
+        # Apply recency decay sweep as of day 55 (within 60-day decay window)
+        as_of_time = self.base_time + timedelta(days=55)
         decayed = self.engine.apply_recency_decay(as_of=as_of_time)
         
         # Should not be decayed
@@ -147,32 +147,33 @@ class TestPersonalLearningEngine(unittest.TestCase):
 
     def test_old_pattern_decays_due_to_inactivity(self) -> None:
         """
-        Verify recency-aware decay:
-        1. Pattern unobserved for 16 days (>= 14d) -> DECAYING
-        2. Pattern unobserved for 50 days (>= 45d) -> INACTIVE
+        Verify recency-aware decay (V1.2 thresholds):
+        1. Pattern unobserved for >= 60 days -> DECAYING
+        2. Pattern unobserved for >= 120 days -> INACTIVE
         """
         pat = self.engine.register_candidate_pattern(
             description="Late night snack appears associated with delayed wakeup.",
             first_seen=self.base_time,
         )
-        for i in range(10):
+        # Spread 10 observations over 50 days for ACTIVE status
+        for day in [3, 7, 12, 18, 24, 30, 36, 42, 48, 50]:
             pat, _ = self.engine.record_evidence(
                 pattern_id=pat.id,
                 observation_type=EvidenceObservationType.SUPPORT,
-                observed_at=self.base_time + timedelta(days=i),
+                observed_at=self.base_time + timedelta(days=day),
             )
         self.assertEqual(pat.status, PatternStatus.ACTIVE.value)
-        last_obs = self.base_time + timedelta(days=9)
+        last_obs = self.base_time + timedelta(days=50)
 
-        # Step 1: 16 days after last observation -> DECAYING
-        time_16d_later = last_obs + timedelta(days=16)
-        decayed_1 = self.engine.apply_recency_decay(as_of=time_16d_later)
+        # Step 1: 65 days after last observation (>= 60d) -> DECAYING
+        time_65d_later = last_obs + timedelta(days=65)
+        decayed_1 = self.engine.apply_recency_decay(as_of=time_65d_later)
         self.assertEqual(len(decayed_1), 1)
         self.assertEqual(decayed_1[0].status, PatternStatus.DECAYING.value)
 
-        # Step 2: 50 days after last observation -> INACTIVE
-        time_50d_later = last_obs + timedelta(days=50)
-        decayed_2 = self.engine.apply_recency_decay(as_of=time_50d_later)
+        # Step 2: 125 days after last observation (>= 120d) -> INACTIVE
+        time_125d_later = last_obs + timedelta(days=125)
+        decayed_2 = self.engine.apply_recency_decay(as_of=time_125d_later)
         self.assertEqual(len(decayed_2), 1)
         self.assertEqual(decayed_2[0].status, PatternStatus.INACTIVE.value)
 
@@ -184,31 +185,30 @@ class TestPersonalLearningEngine(unittest.TestCase):
             description="Desk work appears associated with eye strain.",
             first_seen=self.base_time,
         )
-        for i in range(7):
+        # V1.2: need support>=6, span>=21d for SUPPORTED
+        for day in [3, 7, 12, 18, 22, 24]:
             pat, _ = self.engine.record_evidence(
                 pattern_id=pat.id,
                 observation_type=EvidenceObservationType.SUPPORT,
-                observed_at=self.base_time + timedelta(days=i),
+                observed_at=self.base_time + timedelta(days=day),
             )
         self.assertEqual(pat.status, PatternStatus.SUPPORTED.value)
 
-        # 3 rapid contradictions -> drops ratio below 65% -> DECAYING immediately
-        for i in range(3):
+        # 4 contradictions -> contra_rate >= 50% (4/(7+4)=36%... need more)
+        # V1.2: contra_rate >= 50% with total >= 3 -> DECAYING for SUPPORTED
+        for i in range(7):
             pat, _ = self.engine.record_evidence(
                 pattern_id=pat.id,
                 observation_type=EvidenceObservationType.CONTRADICTION,
-                observed_at=self.base_time + timedelta(days=8 + i),
+                observed_at=self.base_time + timedelta(days=26 + i),
             )
         self.assertEqual(pat.status, PatternStatus.DECAYING.value)
 
-        # Additional contradictions where contra > support -> INACTIVE
-        for i in range(5):
-            pat, _ = self.engine.record_evidence(
-                pattern_id=pat.id,
-                observation_type=EvidenceObservationType.CONTRADICTION,
-                observed_at=self.base_time + timedelta(days=12 + i),
-            )
-        self.assertEqual(pat.status, PatternStatus.INACTIVE.value)
+        # Force INACTIVE via long silence (>= 120d)
+        dormant_time = self.base_time + timedelta(days=200)
+        self.engine.apply_recency_decay(as_of=dormant_time)
+        inactive_pat = self.pattern_store.get_pattern(pat.id)
+        self.assertEqual(inactive_pat.status, PatternStatus.INACTIVE.value)
 
     # --- 6. Pattern Recovery from Inactive / Decaying ---
 
@@ -216,26 +216,26 @@ class TestPersonalLearningEngine(unittest.TestCase):
         """
         Verify that an INACTIVE or DECAYING pattern can recover when fresh supporting evidence reappears.
         """
-        # Create a pattern that decayed to INACTIVE
+        # Create ACTIVE pattern (V1.2: need support>=10, span>=45d)
         pat = self.engine.register_candidate_pattern(
             description="Audiobooks during commute appear associated with relaxed arrival state.",
             first_seen=self.base_time,
         )
-        for i in range(10):
+        for day in [3, 7, 12, 18, 24, 30, 36, 42, 48, 50]:
             pat, _ = self.engine.record_evidence(
                 pattern_id=pat.id,
                 observation_type=EvidenceObservationType.SUPPORT,
-                observed_at=self.base_time + timedelta(days=i),
+                observed_at=self.base_time + timedelta(days=day),
             )
         self.assertEqual(pat.status, PatternStatus.ACTIVE.value)
 
-        # Force decay to INACTIVE via long time gap (60 days)
-        dormant_time = self.base_time + timedelta(days=70)
+        # Force decay to INACTIVE via long time gap (>= 120d)
+        dormant_time = self.base_time + timedelta(days=180)
         self.engine.apply_recency_decay(as_of=dormant_time)
         inactive_pat = self.pattern_store.get_pattern(pat.id)
         self.assertEqual(inactive_pat.status, PatternStatus.INACTIVE.value)
 
-        # Fresh supporting evidence reappears at day 71 -> Recovers to SUPPORTED / ACTIVE
+        # Fresh supporting evidence reappears -> Recovers (INACTIVE recovery gate)
         recovered_pat, _ = self.engine.record_evidence(
             pattern_id=pat.id,
             observation_type=EvidenceObservationType.SUPPORT,

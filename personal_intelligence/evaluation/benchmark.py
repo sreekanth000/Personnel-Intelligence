@@ -476,18 +476,18 @@ class PersonalIntelligenceEvaluationHarness:
     # Category 10: Pattern Decay
     # =========================================================================
     def eval_category_10_pattern_decay(self) -> EvaluationMetric:
-        """Evaluates 7-stage lifecycle progression, temporal decay, and recovery."""
+        """Evaluates 7-stage lifecycle progression, temporal decay, and recovery under V1.2 thresholds."""
         pat = Pattern(
             description="Restorative walks appear associated with improved sleep.",
-            first_seen=self.base_time - timedelta(days=40),
-            last_seen=self.base_time - timedelta(days=20),  # 20 days silence (threshold = 14)
+            first_seen=self.base_time - timedelta(days=120),
+            last_seen=self.base_time - timedelta(days=65),  # 65 days silence (threshold = 60)
             support_count=12,
             contradiction_count=0,
             evidence_strength="strong",
             status=PatternStatus.ACTIVE.value,
         )
 
-        # 1. Decay check
+        # 1. Decay check (silence >= 60d on active pattern -> DECAYING)
         decay_status, _ = self.learning_engine.evaluate_progression(pat, as_of=self.base_time)
 
         # 2. Recovery check on fresh support
@@ -659,11 +659,11 @@ class PersonalIntelligenceEvaluationHarness:
         )
 
     def eval_adv_4_stale_patterns(self) -> EvaluationMetric:
-        """Adversarial: Pattern unobserved for > 45 days -> Must transition to INACTIVE."""
+        """Adversarial: Pattern unobserved for >= 120 days -> Must transition to INACTIVE."""
         pat = Pattern(
             description="User drinks tea at 15:00.",
-            first_seen=self.base_time - timedelta(days=90),
-            last_seen=self.base_time - timedelta(days=50),  # 50 days silence
+            first_seen=self.base_time - timedelta(days=200),
+            last_seen=self.base_time - timedelta(days=130),  # 130 days silence (threshold = 120)
             support_count=20,
             contradiction_count=0,
             status=PatternStatus.DECAYING.value,
@@ -675,7 +675,7 @@ class PersonalIntelligenceEvaluationHarness:
             scenario="adv-04: stale_patterns",
             passed=passed,
             score=1.0 if passed else 0.0,
-            details="Stale pattern correctly marked INACTIVE after 50 days of silence.",
+            details="Stale pattern correctly marked INACTIVE after 130 days of silence.",
             is_adversarial=True,
             restraint_verified=True,
         )

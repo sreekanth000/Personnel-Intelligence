@@ -12,6 +12,20 @@ import uuid
 from personal_intelligence.core.events.models import format_iso8601
 
 
+class SituationFreshness(str, Enum):
+    """Deterministic situation freshness category for policy tie-breakers."""
+    FRESH = "FRESH"   # Material evidence or change within 24h
+    AGING = "AGING"   # Relevant but unchanged for 24h to 7d
+    STALE = "STALE"   # Exceeded 7d without material change
+
+
+class InvestigationStatus(str, Enum):
+    """Outcome status of bounded Hermes investigation."""
+    COMPLETE = "COMPLETE"
+    INCOMPLETE = "INCOMPLETE"
+    FAILED = "FAILED"
+
+
 class PolicyAction(str, Enum):
     """
     Categorical policy action returned by InterventionPolicyEngine.
@@ -40,9 +54,13 @@ class UserContext(str, Enum):
     BUSY = "busy"
     MEETING = "meeting"
     DEEP_WORK = "deep_work"
+    FOCUSED = "focused"
+    IDLE = "idle"
     SLEEP = "sleep"
     DRIVING = "driving"
+    TRANSIT = "transit"
     DND = "dnd"
+    UNKNOWN = "unknown"
     # Aliases
     SLEEPING = "sleep"
     DO_NOT_DISTURB = "dnd"

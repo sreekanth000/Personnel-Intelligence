@@ -54,6 +54,13 @@ class SituationStore:
         if "next_evaluation_at" in row.keys() and row["next_evaluation_at"]:
             next_eval = ensure_timezone_aware(row["next_evaluation_at"], "next_evaluation_at")
 
+        info_req = bool(context.get("information_required", False))
+        if "information_required" in row.keys() and row["information_required"] is not None:
+            info_req = bool(row["information_required"])
+        inv_target = context.get("investigation_target")
+        if "investigation_target" in row.keys() and row["investigation_target"] is not None:
+            inv_target = row["investigation_target"]
+
         return Situation(
             id=row["id"],
             type=row["type"],
@@ -68,6 +75,8 @@ class SituationStore:
             evidence=evidence,
             related_goals=related_goals,
             expires_at=ensure_timezone_aware(row["expires_at"], "expires_at") if row["expires_at"] else None,
+            information_required=info_req,
+            investigation_target=inv_target,
         )
 
     def create(
@@ -90,13 +99,19 @@ class SituationStore:
             situation = type
         else:
             now = datetime.now(timezone.utc)
+            ctx = dict(context or {})
+            if information_required:
+                ctx["information_required"] = True
+            if investigation_target:
+                ctx["investigation_target"] = investigation_target
+
             situation = Situation(
                 id=situation_id or str(uuid.uuid4()),
                 type=type,
                 status=status,
                 priority=priority,
                 novelty=novelty,
-                context=context or {},
+                context=ctx,
                 evidence=evidence or [],
                 related_goals=related_goals or [],
                 information_required=information_required,
@@ -464,6 +479,10 @@ class SituationStore:
             conn.close()
 
 
+    def get_situation(self, situation_id: str) -> Optional[Situation]:
+        """Alias for get()."""
+        return self.get(situation_id)
+
     def resolve(
         self,
         situation_id: str,
@@ -481,6 +500,27 @@ class SituationStore:
         return self.update(
             situation_id=situation_id,
             status=SituationStatus.RESOLVED.value,
+            context=context,
+            clear_next_evaluation=True,
+        )
+
+    def dismiss(
+        self,
+        situation_id: str,
+        feedback: Optional[str] = None,
+    ) -> Optional[Situation]:
+        """Marks a situation as DISMISSED, clears future re-evaluations, and saves user feedback."""
+        existing = self.get(situation_id)
+        if existing is None:
+            return None
+
+        context = dict(existing.context)
+        if feedback:
+            context["dismissal_feedback"] = feedback
+
+        return self.update(
+            situation_id=situation_id,
+            status=SituationStatus.DISMISSED.value,
             context=context,
             clear_next_evaluation=True,
         )

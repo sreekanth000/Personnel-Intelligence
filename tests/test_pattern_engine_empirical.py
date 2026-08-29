@@ -47,7 +47,7 @@ class TestPatternEngineEmpirical(unittest.TestCase):
         self.db_manager = DatabaseManager(db_path=self.db_path)
         self.pattern_store = PatternStore(db_manager=self.db_manager)
         self.episode_store = EpisodeStore(db_manager=self.db_manager)
-        self.engine = PatternEngine(pattern_store=self.pattern_store, decay_after_days=14, inactivate_after_days=45)
+        self.engine = PatternEngine(pattern_store=self.pattern_store, decay_after_days=60, inactivate_after_days=120)
         self.base_time = datetime(2026, 8, 1, 10, 0, 0, tzinfo=timezone.utc)
 
     def tearDown(self) -> None:
@@ -135,10 +135,10 @@ class TestPatternEngineEmpirical(unittest.TestCase):
         self.assertEqual(pat.first_observed, self.base_time)
         self.assertEqual(pat.last_observed, self.base_time)
 
-        # Record 3 supporting observation events
-        t1 = self.base_time + timedelta(days=1)
-        t2 = self.base_time + timedelta(days=2)
-        t3 = self.base_time + timedelta(days=3)
+        # Record 3 supporting observation events spanning >= 7 days for EMERGING
+        t1 = self.base_time + timedelta(days=3)
+        t2 = self.base_time + timedelta(days=5)
+        t3 = self.base_time + timedelta(days=8)
 
         self.engine.record_supporting_evidence(pat.id, observation_id="obs-001", observed_at=t1)
         self.engine.record_supporting_evidence(pat.id, observation_id="obs-002", observed_at=t2)
@@ -212,8 +212,7 @@ class TestPatternEngineEmpirical(unittest.TestCase):
 
     def test_pattern_activation(self) -> None:
         """
-        Verify that accumulating strong supporting evidence (>= 10 observations, >= 85% ratio, recent)
-        progressively advances pattern to ACTIVE status.
+        V1.2: Verify support>=10, span>=45d, contra<20%, recent evidence advances to ACTIVE.
         """
         pat = self.engine.register_candidate_pattern(
             description="User appears more responsive to morning recommendations than evening.",
@@ -221,9 +220,9 @@ class TestPatternEngineEmpirical(unittest.TestCase):
             initial_status=PatternStatus.OBSERVED,
         )
 
-        for i in range(1, 11):
-            t = self.base_time + timedelta(days=i)
-            updated, _ = self.engine.record_supporting_evidence(pat.id, episode_id=f"ep-morn-{i}", observed_at=t)
+        # Spread 10 observations over 50 days to meet V1.2 ACTIVE threshold
+        for day in [3, 7, 12, 18, 24, 30, 36, 42, 48, 50]:
+            updated, _ = self.engine.record_supporting_evidence(pat.id, episode_id=f"ep-morn-{day}", observed_at=self.base_time + timedelta(days=day))
 
         self.assertEqual(updated.support_count, 11)
         self.assertEqual(updated.contradiction_count, 0)
@@ -237,18 +236,19 @@ class TestPatternEngineEmpirical(unittest.TestCase):
 
     def test_pattern_decay(self) -> None:
         """
-        Verify that silence for >= 14 days or multiple contradictions triggers DECAYING state.
+        V1.2: Verify that silence for >= 60 days triggers DECAYING state.
         """
         pat = self.engine.register_candidate_pattern(
             description="Friday afternoons coincide with low code review activity.",
             first_seen=self.base_time,
             initial_status=PatternStatus.ACTIVE,
         )
-        for i in range(1, 10):
-            self.engine.record_supporting_evidence(pat.id, observation_id=f"obs-{i}", observed_at=self.base_time + timedelta(days=i))
+        # Spread evidence over 50 days
+        for day in [3, 7, 12, 18, 24, 30, 36, 42, 48, 50]:
+            self.engine.record_supporting_evidence(pat.id, observation_id=f"obs-{day}", observed_at=self.base_time + timedelta(days=day))
 
-        # Advance time by 20 days without new observations (decay_after_days = 14)
-        sweep_time = self.base_time + timedelta(days=30)
+        # Advance time by 65 days past last obs (>= 60d decay threshold)
+        sweep_time = self.base_time + timedelta(days=50 + 65)
         decayed_patterns = self.engine.apply_recency_decay(as_of=sweep_time)
 
         fetched = self.pattern_store.get_pattern(pat.id)
@@ -262,18 +262,19 @@ class TestPatternEngineEmpirical(unittest.TestCase):
 
     def test_recovery_from_decay(self) -> None:
         """
-        Verify that fresh supporting observations restore a DECAYING pattern back to ACTIVE.
+        V1.2: Verify fresh evidence restores a DECAYING pattern to ACTIVE.
         """
         pat = self.engine.register_candidate_pattern(
             description="Friday afternoons coincide with low code review activity.",
             first_seen=self.base_time,
             initial_status=PatternStatus.ACTIVE,
         )
-        for i in range(1, 10):
-            self.engine.record_supporting_evidence(pat.id, observation_id=f"obs-{i}", observed_at=self.base_time + timedelta(days=i))
+        # Spread over 50 days for ACTIVE with sufficient span
+        for day in [3, 7, 12, 18, 24, 30, 36, 42, 48, 50]:
+            self.engine.record_supporting_evidence(pat.id, observation_id=f"obs-{day}", observed_at=self.base_time + timedelta(days=day))
 
-        # Put in decaying state
-        sweep_time = self.base_time + timedelta(days=30)
+        # Put in decaying state (>= 60d silence)
+        sweep_time = self.base_time + timedelta(days=50 + 65)
         self.engine.apply_recency_decay(as_of=sweep_time)
         self.assertEqual(self.pattern_store.get_pattern(pat.id).status, PatternStatus.DECAYING.value)
 
@@ -290,19 +291,21 @@ class TestPatternEngineEmpirical(unittest.TestCase):
 
     def test_inactive_patterns(self) -> None:
         """
-        Verify that overwhelming contradictions (ratio <= 50% with contra >= 3)
-        or prolonged silence (>= 45 days) marks pattern as INACTIVE.
+        V1.2: Verify prolonged silence (>= 120 days) marks pattern INACTIVE.
+        High contradiction rate (>= 50%) -> DECAYING (not immediately INACTIVE).
         """
         pat = self.engine.register_candidate_pattern(
             description="Exercise is frequently followed by elevated late-night screen time.",
             first_seen=self.base_time,
             initial_status=PatternStatus.EMERGING,
         )
-        # Record 4 supporting and 5 contradictions
-        for i in range(1, 4):
-            self.engine.record_supporting_evidence(pat.id, observation_id=f"obs-supp-{i}", observed_at=self.base_time + timedelta(days=i))
-        for j in range(1, 6):
-            self.engine.record_contradicting_evidence(pat.id, observation_id=f"obs-contra-{j}", observed_at=self.base_time + timedelta(days=4+j))
+        # Record evidence over a span
+        for day in [3, 7, 12]:
+            self.engine.record_supporting_evidence(pat.id, observation_id=f"obs-supp-{day}", observed_at=self.base_time + timedelta(days=day))
+
+        # Force INACTIVE via prolonged silence (>= 120 days)
+        sweep_time = self.base_time + timedelta(days=140)
+        self.engine.apply_recency_decay(as_of=sweep_time)
 
         fetched = self.pattern_store.get_pattern(pat.id)
         self.assertEqual(fetched.status, PatternStatus.INACTIVE.value)

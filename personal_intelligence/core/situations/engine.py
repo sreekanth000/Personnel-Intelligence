@@ -981,7 +981,7 @@ class SituationEngine:
             k for k, v in feats.items()
             if isinstance(v, (int, float)) and abs(float(v)) >= 2.0
         ]
-        if domain_count >= 2 and (high_deviation_feats or is_novel_by_detector):
+        if domain_count >= 2 and is_novel_by_detector and high_deviation_feats:
             has_anomalous_collision = True
             collision_reasons.append(f"Multi-domain interaction across {list(active_domains.keys())} with feature deviations {high_deviation_feats}")
 
@@ -990,7 +990,9 @@ class SituationEngine:
         handled_obs_types = {
             "email_received", "task_created", "action_item", "calendar_event",
             "meeting_decision", "app_focus", "activity_observed", "signal_observed",
-            "unusual_state", "location_ping", "location_update", "routine_deviation"
+            "unusual_state", "location_ping", "location_update", "routine_deviation",
+            "newsletter_received", "system_ping", "metric_report", "notification",
+            "routine_event", "info_event",
         }
         for obs in observations:
             obs_type = getattr(obs, "observation_type", getattr(obs, "event_type", ""))
@@ -1000,7 +1002,7 @@ class SituationEngine:
         has_unmatched_combination = (
             len(existing_candidate_categories) == 0
             and len(observations) >= 1
-            and (len(unhandled_observations) >= 1 or domain_count >= 2 or is_novel_by_detector)
+            and (len(unhandled_observations) >= 1 or (domain_count >= 2 and is_novel_by_detector))
         )
 
         if is_novel_by_detector or has_anomalous_collision or has_unmatched_combination:

@@ -158,7 +158,22 @@ class DatabaseManager:
                 if "next_evaluation_at" not in columns:
                     cursor.execute("ALTER TABLE situations ADD COLUMN next_evaluation_at TEXT;")
 
+            # Check if entity_edges table has valid_from, valid_to, status
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='entity_edges';")
+            if cursor.fetchone():
+                cursor.execute("PRAGMA table_info(entity_edges);")
+                columns = {row["name"] for row in cursor.fetchall()}
+                if "valid_from" not in columns:
+                    cursor.execute("ALTER TABLE entity_edges ADD COLUMN valid_from TEXT;")
+                if "valid_to" not in columns:
+                    cursor.execute("ALTER TABLE entity_edges ADD COLUMN valid_to TEXT;")
+                if "status" not in columns:
+                    cursor.execute("ALTER TABLE entity_edges ADD COLUMN status TEXT NOT NULL DEFAULT 'active';")
+
             with conn:
                 conn.executescript(schema_sql)
         finally:
             conn.close()
+
+    init_schema = initialize_schema
+    initialize = initialize_schema

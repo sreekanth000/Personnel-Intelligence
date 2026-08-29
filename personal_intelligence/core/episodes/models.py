@@ -188,6 +188,14 @@ class ReasoningEpisode:
     outcome: Optional[Dict[str, Any]] = None
     follow_up_at: Optional[datetime] = None
     status: str = EpisodeStatus.STARTED.value
+    # Hermes Invocation Telemetry (Prompt 3)
+    reason_for_invocation: Optional[str] = None
+    reasoning_budget: Optional[str] = None
+    context_size: Optional[int] = None
+    investigation_rounds: int = 0
+    tool_calls: int = 0
+    execution_time_ms: Optional[int] = None
+    reason_code: Optional[str] = None
     # Optional backwards compatibility attributes
     episode_id_alias: Optional[str] = None
     trigger_type_alias: Optional[str] = None
@@ -214,6 +222,14 @@ class ReasoningEpisode:
         outcome: Optional[Dict[str, Any]] = None,
         follow_up_at: Optional[datetime] = None,
         status: str = EpisodeStatus.STARTED.value,
+        # Invocation Telemetry (Prompt 3)
+        reason_for_invocation: Optional[str] = None,
+        reasoning_budget: Optional[str] = None,
+        context_size: Optional[int] = None,
+        investigation_rounds: int = 0,
+        tool_calls: int = 0,
+        execution_time_ms: Optional[int] = None,
+        reason_code: Optional[str] = None,
         # Backwards compatibility kwargs:
         episode_id: Optional[str] = None,
         trigger_type: Optional[str] = None,
@@ -246,6 +262,15 @@ class ReasoningEpisode:
         
         stat_val = status.value if hasattr(status, "value") else str(status)
         self.status = stat_val.strip().lower()
+
+        # Telemetry
+        self.reason_for_invocation = reason_for_invocation or self._custom_metadata.get("reason_for_invocation")
+        self.reasoning_budget = reasoning_budget or self._custom_metadata.get("reasoning_budget")
+        self.context_size = context_size or self._custom_metadata.get("context_size")
+        self.investigation_rounds = investigation_rounds or self._custom_metadata.get("investigation_rounds", 0)
+        self.tool_calls = tool_calls or self._custom_metadata.get("tool_calls", 0)
+        self.execution_time_ms = execution_time_ms or self._custom_metadata.get("execution_time_ms")
+        self.reason_code = reason_code or self._custom_metadata.get("reason_code")
 
 
     @property
@@ -446,6 +471,14 @@ class ReasoningEpisode:
             "parse_status": self.parse_status,
             "follow_up_at": format_iso8601(self.follow_up_at) if self.follow_up_at else None,
             "status": self.status,
+            # Telemetry
+            "reason_for_invocation": self.reason_for_invocation,
+            "reasoning_budget": self.reasoning_budget,
+            "context_size": self.context_size,
+            "investigation_rounds": self.investigation_rounds,
+            "tool_calls": self.tool_calls,
+            "execution_time_ms": self.execution_time_ms,
+            "reason_code": self.reason_code,
         }
 
     @classmethod
@@ -478,4 +511,11 @@ class ReasoningEpisode:
             outcome=data.get("outcome"),
             follow_up_at=ensure_timezone_aware(follow_up_raw, "follow_up_at") if follow_up_raw else None,
             status=str(data.get("status", EpisodeStatus.STARTED.value)),
+            reason_for_invocation=data.get("reason_for_invocation"),
+            reasoning_budget=data.get("reasoning_budget"),
+            context_size=data.get("context_size"),
+            investigation_rounds=data.get("investigation_rounds", 0),
+            tool_calls=data.get("tool_calls", 0),
+            execution_time_ms=data.get("execution_time_ms"),
+            reason_code=data.get("reason_code"),
         )

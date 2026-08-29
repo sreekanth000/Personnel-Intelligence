@@ -157,6 +157,7 @@ class Goal:
     domain: Optional[str] = None
     progress: float = 0.0  # 0.0 to 1.0
     target_metric: Optional[str] = None
+    satisfaction_criteria: Optional[str] = None  # What must be true for goal completion (Blueprint §10)
     parent_goal_id: Optional[str] = None
     sub_goal_ids: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -229,6 +230,7 @@ class Goal:
             "domain": self.domain,
             "progress": self.progress,
             "target_metric": self.target_metric,
+            "satisfaction_criteria": self.satisfaction_criteria,
             "parent_goal_id": self.parent_goal_id,
             "sub_goal_ids": self.sub_goal_ids,
             "metadata": self.metadata,
@@ -268,6 +270,7 @@ class Goal:
             domain=data.get("domain"),
             progress=data.get("progress", 0.0),
             target_metric=data.get("target_metric"),
+            satisfaction_criteria=data.get("satisfaction_criteria"),
             parent_goal_id=data.get("parent_goal_id"),
             sub_goal_ids=data.get("sub_goal_ids", []),
             metadata=data.get("metadata", {}),

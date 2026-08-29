@@ -75,18 +75,33 @@ class ActivityStream:
     """
 
     VALID_EVENT_TYPES = {
+        # Canonical Prompt 3 Telemetry Stages
+        "observation",
         "observation_created",
+        "state_update",
         "state_updated",
+        "change_detected",
         "novelty_detected",
+        "significance_evaluated",
         "situation_created",
+        "reasoning_eligibility",
+        "hermes_investigation",
         "investigation_started",
-        "tool_requested",
-        "tool_completed",
-        "evidence_added",
+        "hermes_reasoning",
         "reasoning_started",
         "reasoning_completed",
+        "evidence_evaluated",
+        "evidence_added",
+        "recommendation_created",
+        "policy_decision",
         "intervention_decided",
+        "user_response",
+        "user_feedback_applied",
+        "outcome",
+        "outcome_recorded",
         "pattern_updated",
+        "tool_requested",
+        "tool_completed",
     }
 
     _instance: Optional["ActivityStream"] = None

@@ -868,11 +868,16 @@ class ContextBuilder:
             conf = getattr(p, "confidence", 0.5)
             cadence = getattr(p, "cadence", "daily")
             cadence_str = cadence.value if hasattr(cadence, "value") else str(cadence)
+            ctx_statement = p.to_context_statement() if hasattr(p, "to_context_statement") else (
+                f"Historically, similar situations were often followed by: {desc}"
+                if not desc.startswith(("Historically,", "Observed association:")) else desc
+            )
 
             result.append({
                 "pattern_id": p_id,
                 "name": name,
                 "description": desc,
+                "context_statement": ctx_statement,
                 "status": status.value if hasattr(status, "value") else str(status),
                 "support_count": supp,
                 "evidence_strength": strength,

@@ -635,3 +635,5 @@ class HermesCapabilityInspector:
             capabilities_discovered=capabilities_discovered_flag,
             gmail_authenticated=gmail_authenticated_flag,
         )
+
+    inspect = probe_all

@@ -56,12 +56,79 @@ class RelevanceLevel(str, Enum):
 
 
 class EvidenceStrength(str, Enum):
-    """Categorical evidence strength classification."""
+    """Categorical evidence strength classification.
+
+    Blueprint §23: Personal Intelligence calculates evidence strength
+    deterministically. Hermes does NOT generate it.
+    """
     WEAK = "weak"
     MODERATE = "moderate"
     STRONG = "strong"
+    CONFLICTED = "conflicted"
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
 
+
+@dataclass
+class BoundedReasoningRequest:
+    """
+    Standardized bounded reasoning request submitted to Hermes.
+    Hermes reasons over this explicit bounded slice rather than receiving raw world model dumps.
+    """
+    situation: str
+    observed_facts: List[str] = field(default_factory=list)
+    evidence: List[str] = field(default_factory=list)
+    known_patterns: List[str] = field(default_factory=list)
+    active_goals: List[str] = field(default_factory=list)
+    relevant_timeline: List[str] = field(default_factory=list)
+    information_gaps: List[str] = field(default_factory=list)
+    evidence_strength: str = "moderate"
+    attention_state: str = "available"
+    instructions: str = (
+        "Reason strictly over the provided bounded context. Do not invent facts, extrapolate unauthorized certainty, "
+        "or output numerical confidence percentages. Return structured JSON matching the required schema."
+    )
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        if not self.situation or not isinstance(self.situation, str):
+            raise ValueError("situation must be a non-empty string.")
+        for field_name in ["observed_facts", "evidence", "known_patterns", "active_goals", "relevant_timeline", "information_gaps"]:
+            val = getattr(self, field_name)
+            if not isinstance(val, list):
+                raise ValueError(f"{field_name} must be a list of strings.")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "situation": self.situation,
+            "observed_facts": self.observed_facts,
+            "evidence": self.evidence,
+            "known_patterns": self.known_patterns,
+            "active_goals": self.active_goals,
+            "relevant_timeline": self.relevant_timeline,
+            "information_gaps": self.information_gaps,
+            "evidence_strength": self.evidence_strength,
+            "attention_state": self.attention_state,
+            "instructions": self.instructions,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "BoundedReasoningRequest":
+        if not isinstance(data, dict):
+            raise ValueError("Expected dictionary for BoundedReasoningRequest.")
+        return cls(
+            situation=data.get("situation", ""),
+            observed_facts=data.get("observed_facts", []),
+            evidence=data.get("evidence", []),
+            known_patterns=data.get("known_patterns", []),
+            active_goals=data.get("active_goals", []),
+            relevant_timeline=data.get("relevant_timeline", []),
+            information_gaps=data.get("information_gaps", []),
+            evidence_strength=data.get("evidence_strength", "moderate"),
+            attention_state=data.get("attention_state", "available"),
+            instructions=data.get("instructions", ""),
+        )
 
 
 @dataclass
@@ -81,7 +148,7 @@ class StructuredReasoningSynthesis:
     urgency: str = UrgencyLevel.MEDIUM.value
     actionability: str = ActionabilityLevel.MEDIUM.value
     relevance: str = RelevanceLevel.MEDIUM.value
-    evidence_strength: str = EvidenceStrength.MODERATE.value
+    evidence_strength: str = EvidenceStrength.MODERATE.value  # PI-calculated, not Hermes-generated
 
     def __post_init__(self) -> None:
         self.validate()
@@ -169,7 +236,7 @@ class NovelReasoningSynthesis:
     urgency: str = UrgencyLevel.LOW.value
     actionability: str = ActionabilityLevel.LOW.value
     relevance: str = RelevanceLevel.MEDIUM.value
-    evidence_strength: str = EvidenceStrength.WEAK.value
+    evidence_strength: str = EvidenceStrength.WEAK.value  # PI-calculated, not Hermes-generated
 
     def __post_init__(self) -> None:
         self.validate()
@@ -314,19 +381,26 @@ def validate_reasoning_synthesis(raw_text: str) -> Tuple[Optional[StructuredReas
     elif not isinstance(data["relevance"], str) or data["relevance"].lower() not in valid_relevances:
         errors.append(f"Field 'relevance' must be one of {sorted(list(valid_relevances))}, got '{data.get('relevance')}'.")
 
+    # 4b. evidence_strength — OPTIONAL from Hermes (PI calculates it independently)
+    #     If Hermes provides it, validate format but don't require it.
     valid_strengths = {e.value for e in EvidenceStrength}
-    if "evidence_strength" not in data:
-        errors.append("Missing required field: 'evidence_strength'.")
-    elif not isinstance(data["evidence_strength"], str) or data["evidence_strength"].lower() not in valid_strengths:
-        errors.append(f"Field 'evidence_strength' must be one of {sorted(list(valid_strengths))}, got '{data.get('evidence_strength')}'.")
+    if "evidence_strength" in data:
+        if not isinstance(data["evidence_strength"], str) or data["evidence_strength"].lower() not in valid_strengths:
+            errors.append(f"Field 'evidence_strength' if provided must be one of {sorted(list(valid_strengths))}, got '{data.get('evidence_strength')}'.")
 
     # 5. Numerical confidence check: strictly disallow numerical confidence outputs
-    if "confidence" in data and isinstance(data["confidence"], (int, float)):
-        errors.append("Numerical confidence values are prohibited. Use categorical 'evidence_strength' instead.")
+    if "confidence" in data:
+        errors.append("Numerical confidence values are prohibited. Field 'confidence' is prohibited in Hermes output. Personal Intelligence calculates evidence strength deterministically.")
 
     # 6. Policy decision constraint: strictly disallow Hermes from dictating intervention actions
     if "action" in data and str(data["action"]).upper() in {"INTERRUPT", "BRIEFING", "DEFER", "SUPPRESS", "DISCARD"}:
         errors.append("Intervention decisions (INTERRUPT/BRIEFING/DEFER/SUPPRESS/DISCARD) belong strictly to InterventionPolicyEngine, not Hermes.")
+    if "intervention_decision" in data or "policy_decision" in data:
+        errors.append("Intervention policy decisions belong strictly to Personal Intelligence, not Hermes.")
+
+    # 7. Database mutations constraint: strictly disallow Hermes from dictating database mutations
+    if "database_mutations" in data or "mutations" in data or "state_mutations" in data:
+        errors.append("Database mutations are prohibited in Hermes output. Personal Intelligence manages all persistent world model state.")
 
     if errors:
         return None, errors
@@ -401,11 +475,11 @@ def validate_novel_reasoning_synthesis(raw_text: str) -> Tuple[Optional[NovelRea
     elif not isinstance(data["relevance"], str) or data["relevance"].lower() not in valid_relevances:
         errors.append(f"Field 'relevance' must be one of {sorted(list(valid_relevances))}, got '{data.get('relevance')}'.")
 
+    # 4b. evidence_strength — OPTIONAL from Hermes for novel reasoning too
     valid_strengths = {e.value for e in EvidenceStrength}
-    if "evidence_strength" not in data:
-        errors.append("Missing required field: 'evidence_strength'.")
-    elif not isinstance(data["evidence_strength"], str) or data["evidence_strength"].lower() not in valid_strengths:
-        errors.append(f"Field 'evidence_strength' must be one of {sorted(list(valid_strengths))}, got '{data.get('evidence_strength')}'.")
+    if "evidence_strength" in data:
+        if not isinstance(data["evidence_strength"], str) or data["evidence_strength"].lower() not in valid_strengths:
+            errors.append(f"Field 'evidence_strength' if provided must be one of {sorted(list(valid_strengths))}, got '{data.get('evidence_strength')}'.")
 
     if errors:
         return None, errors

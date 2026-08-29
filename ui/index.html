@@ -35,10 +35,11 @@
       </nav>
 
       <div class="header-actions">
-        <!-- Mode Switcher (LIVE vs DEMO) -->
+        <!-- Mode Switcher (LIVE vs DEMO vs TEST) -->
         <div class="mode-toggle-group">
           <button id="btn-mode-live" class="mode-btn active">LIVE</button>
           <button id="btn-mode-demo" class="mode-btn">DEMO</button>
+          <button id="btn-mode-test" class="mode-btn">TEST</button>
         </div>
 
         <div class="system-status">
@@ -68,33 +69,30 @@
     </div>
   </div>
 
-  <!-- Demo Control Strip (Displayed when in Demo Mode) -->
+  <!-- Demo Control Strip (Displayed when in Demo/Test Mode) -->
   <section class="demo-strip hidden" id="demo-control-strip">
     <div class="demo-strip-container">
-      <div class="demo-label">🧪 DEMO SCENARIO CONTROLLER:</div>
+      <div class="demo-label">🧪 DEMO SCENARIO RUNNER:</div>
       <div class="demo-controls-group">
         <label for="demo-scenario-select" class="demo-select-label">Scenario:</label>
         <select id="demo-scenario-select" class="demo-select">
-          <option value="1">1. Forgotten Commitment (Gmail, Cal, Drive, Meet)</option>
-          <option value="2">2. Travel Risk (Cal, Weather, Location)</option>
-          <option value="3">3. Novel Situation (NOVEL_COMBINATION)</option>
-          <option value="4">4. Multi-Goal Conflict (Architecture vs Training)</option>
-          <option value="5">5. Pattern Discovery (Briefing Responsiveness)</option>
+          <option value="1">1. Upcoming Travel (Train 21:10, Office State, Weather/Transit Investigation)</option>
+          <option value="2">2. Unresolved Project Commitment (Gmail + Cal + Drive -> Approaching Milestone)</option>
+          <option value="3">3. Cross-Domain Novelty (NOVEL_COMBINATION across domains)</option>
+          <option value="4">4. Deep Work (Sustained Activity, Zero Meetings, Notification Suppression)</option>
+          <option value="5">5. Learned Interaction Preference (Longitudinal Learning Synthesis)</option>
         </select>
         <button id="btn-demo-inject" class="btn btn-primary btn-sm">
-          <span class="btn-icon">⚡</span> Inject Events
+          <span class="btn-icon">⚡</span> Run Scenario
         </button>
         <button id="btn-demo-run" class="btn btn-action btn-sm">
-          <span class="btn-icon">🧠</span> Run Intelligence
+          <span class="btn-icon">🧠</span> Run Loop
         </button>
         <button id="btn-demo-reset" class="btn btn-secondary btn-sm">
-          <span class="btn-icon">↺</span> Reset
+          <span class="btn-icon">↺</span> Reset State
         </button>
         <button id="btn-demo-clear" class="btn btn-secondary btn-sm">
-          <span class="btn-icon">🗑️</span> Clear
-        </button>
-        <button id="btn-toggle-operating-mode" class="btn btn-secondary btn-sm">
-          <span class="btn-icon">🔀</span> <span id="btn-mode-label">Switch to LIVE MODE</span>
+          <span class="btn-icon">🗑️</span> Clear Demo
         </button>
       </div>
       <div id="operating-mode-badge" class="demo-mode-badge">DEMO MODE ACTIVE</div>
@@ -184,12 +182,13 @@
          ===================================================================== -->
     <div id="screen-overview" class="screen-view active">
       <div class="screen-header">
-        <h2 class="screen-title">System Overview</h2>
-        <span class="screen-subtitle">Cross-domain situational awareness & daily allocations</span>
+        <h2 class="screen-title">Personal Intelligence Overview</h2>
+        <span class="screen-subtitle">Unified temporal world model & cross-domain situation discovery</span>
       </div>
 
+      <!-- ROW 1: CURRENT STATE MATRIX & WHAT CHANGED -->
       <div class="dashboard-grid grid-2-col">
-        <!-- 1. Current State Summary -->
+        <!-- 1. Current State Matrix -->
         <section class="card current-state-card">
           <div class="card-header">
             <div class="card-title-group">
@@ -202,20 +201,20 @@
             <p class="state-lead-text" id="overview-state-summary">Loading multi-dimensional state...</p>
             <div class="state-metrics-grid">
               <div class="metric-pill">
-                <span class="metric-label">Activity</span>
+                <span class="metric-label">Current Focus</span>
                 <span class="metric-value" id="overview-activity">--</span>
               </div>
               <div class="metric-pill">
-                <span class="metric-label">Duration</span>
-                <span class="metric-value" id="overview-duration">--</span>
+                <span class="metric-label">Attention State</span>
+                <span class="metric-value" id="overview-attention-state" style="color: #67e8f9; font-weight: 700;">--</span>
+              </div>
+              <div class="metric-pill">
+                <span class="metric-label">Availability</span>
+                <span class="metric-value" id="overview-availability" style="color: #86efac; font-weight: 700;">--</span>
               </div>
               <div class="metric-pill">
                 <span class="metric-label">Location</span>
                 <span class="metric-value" id="overview-location">--</span>
-              </div>
-              <div class="metric-pill">
-                <span class="metric-label">Time Segment</span>
-                <span class="metric-value" id="overview-tod">--</span>
               </div>
             </div>
             <div class="features-table-wrapper">
@@ -225,29 +224,43 @@
           </div>
         </section>
 
-        <!-- 2. Important Recommendations & Policy Interventions -->
-        <section class="card recommendations-card">
+        <!-- 2. What Changed -->
+        <section class="card what-changed-card">
           <div class="card-header">
             <div class="card-title-group">
               <span class="section-num">02</span>
-              <h3 class="card-title">Important Recommendations</h3>
+              <h3 class="card-title">What Changed</h3>
             </div>
-            <span class="badge badge-recommendation">Actionable Guidance</span>
+            <span class="badge badge-fact">Meaningful Deltas</span>
           </div>
-          <div class="card-body" id="overview-recommendations-container">
-            <div class="loading-skeleton">Loading recommendations...</div>
+          <div class="card-body" id="overview-what-changed-container">
+            <div class="loading-skeleton">Loading recent meaningful changes...</div>
           </div>
         </section>
       </div>
 
-      <!-- Live Execution Activity Stream & Situations/Goals Grid -->
+      <!-- ROW 2: WHAT MATTERS NOW (RANKED SITUATIONS WITH 6 CARD FIELDS) -->
+      <section class="card what-matters-now-section" style="margin-top: 1.5rem;">
+        <div class="card-header">
+          <div class="card-title-group">
+            <span class="section-num">03</span>
+            <h3 class="card-title">What Matters Now</h3>
+          </div>
+          <span class="badge badge-recommendation">Ranked Situations</span>
+        </div>
+        <div class="card-body" id="overview-what-matters-container">
+          <div class="loading-skeleton">Loading active situations and recommendations...</div>
+        </div>
+      </section>
+
+      <!-- ROW 3: SYSTEM ACTIVITY TELEMETRY & GOALS/COMMITMENTS -->
       <div class="dashboard-grid grid-2-col" style="margin-top: 1.5rem;">
-        <!-- Live Activity Stream (Execution Lifecycle) -->
+        <!-- Live Activity Stream (Execution Telemetry) -->
         <section class="card">
           <div class="card-header">
             <div class="card-title-group">
               <span class="status-pulse"></span>
-              <h3 class="card-title">Live Execution Activity Stream</h3>
+              <h3 class="card-title">System Activity (Live Telemetry)</h3>
             </div>
             <span class="card-meta" id="activity-stream-count">0 events</span>
           </div>
@@ -263,7 +276,7 @@
           <section class="card">
             <div class="card-header">
               <div class="card-title-group">
-                <span class="section-num">03</span>
+                <span class="section-num">04</span>
                 <h3 class="card-title">Active Goals</h3>
               </div>
               <span class="card-count-badge" id="overview-goals-count">0 Active</span>
@@ -276,8 +289,8 @@
           <section class="card">
             <div class="card-header">
               <div class="card-title-group">
-                <span class="section-num">04</span>
-                <h3 class="card-title">Upcoming Commitments</h3>
+                <span class="section-num">05</span>
+                <h3 class="card-title">Active Commitments</h3>
               </div>
               <span class="card-meta">Schedule Load</span>
             </div>

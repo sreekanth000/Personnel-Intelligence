@@ -101,7 +101,8 @@ CREATE INDEX IF NOT EXISTS idx_situations_type ON situations(type);
 CREATE INDEX IF NOT EXISTS idx_situations_expires_at ON situations(expires_at);
 CREATE INDEX IF NOT EXISTS idx_situations_next_evaluation_at ON situations(next_evaluation_at);
 
--- Novelty scores table
+-- V1_DEFERRED: Novelty scores are transient and computed on-demand by NoveltyEngine.
+-- This table is retained for schema compatibility but should not be actively written in V1.
 CREATE TABLE IF NOT EXISTS novelty_scores (
     assessment_id TEXT PRIMARY KEY,
     score REAL NOT NULL,
@@ -114,7 +115,8 @@ CREATE TABLE IF NOT EXISTS novelty_scores (
     metrics_json TEXT
 );
 
--- Learned patterns table (Legacy representation)
+-- V1_DEFERRED: Legacy pattern representation superseded by the 'patterns' table below.
+-- Retained for backward compatibility only. New code should use 'patterns' + 'pattern_evidence'.
 CREATE TABLE IF NOT EXISTS learned_patterns (
     pattern_id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -222,7 +224,8 @@ CREATE INDEX IF NOT EXISTS idx_audit_accessed_at ON context_access_audit(accesse
 CREATE INDEX IF NOT EXISTS idx_audit_accessor ON context_access_audit(accessor);
 CREATE INDEX IF NOT EXISTS idx_audit_situation ON context_access_audit(situation_id);
 
--- Semantic Vector Embeddings Table for In-Process Vector Search
+-- V1_DEFERRED: Vector embeddings for semantic search — deferred to post-V1.
+-- Retained for schema compatibility. Not actively used by V1 reasoning pipeline.
 CREATE TABLE IF NOT EXISTS vector_embeddings (
     id TEXT PRIMARY KEY,
     source_type TEXT NOT NULL,
@@ -250,6 +253,7 @@ CREATE INDEX IF NOT EXISTS idx_entity_nodes_name ON entity_nodes(name);
 CREATE INDEX IF NOT EXISTS idx_entity_nodes_type ON entity_nodes(entity_type);
 
 -- Entity Edges for Personal Knowledge Graph
+-- Blueprint §7: Temporal validity (valid_from/valid_to) prevents treating past relationships as permanent.
 CREATE TABLE IF NOT EXISTS entity_edges (
     id TEXT PRIMARY KEY,
     source_id TEXT NOT NULL,
@@ -258,6 +262,9 @@ CREATE TABLE IF NOT EXISTS entity_edges (
     weight REAL NOT NULL DEFAULT 1.0,
     metadata_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
+    valid_from TEXT,
+    valid_to TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
     FOREIGN KEY (source_id) REFERENCES entity_nodes(id) ON DELETE CASCADE,
     FOREIGN KEY (target_id) REFERENCES entity_nodes(id) ON DELETE CASCADE
 );
@@ -265,8 +272,10 @@ CREATE TABLE IF NOT EXISTS entity_edges (
 CREATE INDEX IF NOT EXISTS idx_entity_edges_source ON entity_edges(source_id);
 CREATE INDEX IF NOT EXISTS idx_entity_edges_target ON entity_edges(target_id);
 CREATE INDEX IF NOT EXISTS idx_entity_edges_rel ON entity_edges(relationship);
+CREATE INDEX IF NOT EXISTS idx_entity_edges_status ON entity_edges(status);
 
--- Probabilistic Facts with Bayesian Belief Scores
+-- V1_DEFERRED: Probabilistic facts with Bayesian belief scores — deferred to post-V1.
+-- Retained for schema compatibility. Not actively used in V1 deterministic reasoning.
 CREATE TABLE IF NOT EXISTS probabilistic_facts (
     id TEXT PRIMARY KEY,
     subject TEXT NOT NULL,
@@ -283,4 +292,34 @@ CREATE TABLE IF NOT EXISTS probabilistic_facts (
 
 CREATE INDEX IF NOT EXISTS idx_facts_triple ON probabilistic_facts(subject, predicate, object);
 CREATE INDEX IF NOT EXISTS idx_facts_status ON probabilistic_facts(status);
+
+-- V1_DEFERRED: Person profiles for interpersonal dynamics — deferred to post-V1.
+-- Retained for schema compatibility. Not actively used in V1 reasoning.
+CREATE TABLE IF NOT EXISTS person_profiles (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    relationship_role TEXT NOT NULL DEFAULT 'collaborator',
+    email TEXT,
+    avg_response_delay_mins REAL NOT NULL DEFAULT 60.0,
+    priority_sensitivity REAL NOT NULL DEFAULT 0.5,
+    preferred_channel TEXT NOT NULL DEFAULT 'email',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_person_profiles_name ON person_profiles(name);
+
+-- V1_DEFERRED: Predictive processing expectation baselines — deferred to post-V1.
+-- Retained for schema compatibility. Not actively used in V1 deterministic novelty detection.
+CREATE TABLE IF NOT EXISTS predictive_baselines (
+    id TEXT PRIMARY KEY,
+    time_window_key TEXT NOT NULL,
+    expected_location TEXT NOT NULL DEFAULT 'Primary Workspace',
+    expected_activity TEXT NOT NULL DEFAULT 'Deep Work',
+    expected_cognitive_load REAL NOT NULL DEFAULT 0.5,
+    sample_count INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_pred_baseline_key ON predictive_baselines(time_window_key);
 

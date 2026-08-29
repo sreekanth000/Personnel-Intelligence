@@ -18,6 +18,7 @@ from personal_intelligence.hermes_bridge.client import (
     get_active_hermes_context,
     set_active_hermes_context,
 )
+from personal_intelligence.security.guard import UnauthorizedWriteOperationError
 from personal_intelligence.hermes_bridge.connection_manager import (
     HermesConnectionManager,
     HermesHealthReport,
@@ -54,6 +55,7 @@ from personal_intelligence.hermes_bridge.novelty_orchestrator import (
 )
 from personal_intelligence.hermes_bridge.reasoning import (
     ActionabilityLevel,
+    BoundedReasoningRequest,
     EvidenceStrength,
     NovelReasoningSynthesis,
     NovelReasoningWorkflowResult,
@@ -67,6 +69,7 @@ from personal_intelligence.hermes_bridge.reasoning import (
 )
 
 from personal_intelligence.hermes_bridge.situation_investigation import (
+    BoundedInvestigationRequest,
     CrossSourceEvidenceBundle,
     InvestigationOutcome,
     InvestigationPlan,
@@ -90,6 +93,7 @@ __all__ = [
     "HermesCapabilityInspector",
     "REQUIRED_CAPABILITIES",
     "CAPABILITY_TOOL_MAPPINGS",
+    "BoundedReasoningRequest",
     "ReasoningWorkflow",
     "ReasoningWorkflowResult",
     "StructuredReasoningSynthesis",
@@ -108,11 +112,13 @@ __all__ = [
     "InvestigationResult",
     "BoundedInvestigationWorkflow",
     "validate_investigation_result",
+    "BoundedInvestigationRequest",
     "SituationInvestigator",
     "InvestigationOutcome",
     "InvestigationPlan",
     "InvestigationTerminationReason",
     "CrossSourceEvidenceBundle",
+    "UnauthorizedWriteOperationError",
 ]
 
 

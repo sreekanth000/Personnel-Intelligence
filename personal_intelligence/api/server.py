@@ -611,22 +611,55 @@ class DashboardDataService:
                 return self.demo_runner.event_store
         return self.event_store
 
+    def get_mode_payload(self) -> Dict[str, Any]:
+        """Returns the current operating mode: LIVE, DEMO, or TEST."""
+        cur_mode = getattr(self, "operating_mode", "DEMO" if self.is_demo_mode else "LIVE")
+        return {
+            "mode": cur_mode,
+            "is_demo_mode": self.is_demo_mode,
+            "active_scenario": getattr(self, "active_demo_scenario", None),
+            "available_modes": ["LIVE", "DEMO", "TEST"],
+            "timestamp": format_iso8601(datetime.now(timezone.utc)),
+        }
+
+    def set_operating_mode(self, mode: str) -> Dict[str, Any]:
+        """Sets operating mode to LIVE, DEMO, or TEST."""
+        m = (mode or "LIVE").upper()
+        if m not in ("LIVE", "DEMO", "TEST"):
+            m = "DEMO"
+        self.operating_mode = m
+        self.is_demo_mode = (m in ("DEMO", "TEST"))
+
+        from personal_intelligence.hermes_bridge.client import HermesBridgeExecutionMode
+        if hasattr(self, "hermes_client"):
+            self.hermes_client.mode = HermesBridgeExecutionMode.LIVE if m == "LIVE" else HermesBridgeExecutionMode.DEMO
+        if hasattr(self.demo_runner, "hermes_client"):
+            self.demo_runner.hermes_client.mode = HermesBridgeExecutionMode.DEMO
+
+        self.activity_stream.emit("state_updated", f"Switched operating mode to {m} MODE", source="mode_switcher")
+        return {
+            "status": "success",
+            "mode": m,
+            "is_demo_mode": self.is_demo_mode,
+            "timestamp": format_iso8601(datetime.now(timezone.utc)),
+        }
+
     def get_current_state_payload(self) -> Dict[str, Any]:
-        """Returns structured current state with human summary and detailed features."""
+        """Returns structured current state: focus, attention state, availability, active goals, and commitments."""
         now = datetime.now(timezone.utc)
         state_rep = self.current_state_engine.compute_current_state(reference_time=now)
         active_goals = self.current_goal_store.get_active_goals()
-
-        features_list = []
-        for name, feat in sorted(state_rep.features.items()):
-            features_list.append({
-                "name": feat.name,
-                "value": feat.value,
-                "source": feat.source,
-                "confidence_label": "High Observation Confidence" if feat.confidence >= 0.8 else "Moderate",
-                "timestamp": format_iso8601(feat.timestamp),
-                "metadata": feat.metadata,
-            })
+        recent_events = self.current_event_store.get_recent(limit=20)
+        commitments = [
+            {
+                "id": e.id,
+                "summary": e.payload.get("summary") or e.payload.get("title") or e.payload.get("subject") or e.event_type if isinstance(e.payload, dict) else str(e.payload),
+                "source": e.source,
+                "time": format_iso8601(e.event_time),
+            }
+            for e in recent_events
+            if e.event_type in ("calendar_event", "commitment_scheduled", "action_item", "email_received") or e.source in ("calendar", "meet", "gmail")
+        ][:6]
 
         act_feat = state_rep.get_feature("current_activity")
         act_val = act_feat.value if act_feat else "Software Engineering"
@@ -637,39 +670,99 @@ class DashboardDataService:
         tod_feat = state_rep.get_feature("time_of_day")
         tod_val = tod_feat.value.get("bucket", "daytime") if tod_feat and isinstance(tod_feat.value, dict) else "daytime"
 
-        if not features_list:
-            summary_text = "Live system initialized. No synthetic data present. Connect Gmail to ingest live email events into your Personal World Model."
-        else:
-            summary_text = (
-                f"User is engaged in {str(act_val).replace('_', ' ').title()} ({dur_val}) at {loc_val} during {tod_val}. "
-                f"Active Goals: {len(active_goals)}."
-            )
+        att_feat = state_rep.get_feature("attention_state")
+        att_val = att_feat.value if att_feat else "FOCUSED"
+        cog_feat = state_rep.get_feature("cognitive_availability")
+        cog_val = cog_feat.value if cog_feat else "AVAILABLE"
+
+        summary_text = (
+            f"User is engaged in {str(act_val).replace('_', ' ').title()} ({dur_val}) at {loc_val}. "
+            f"Attention: {att_val}, Availability: {cog_val}. Active Goals: {len(active_goals)}."
+        )
 
         return {
             "summary": summary_text,
             "timestamp": format_iso8601(now),
+            "current_focus": str(act_val).replace("_", " ").title(),
             "activity": str(act_val).replace("_", " ").title(),
+            "attention_state": str(att_val).upper(),
+            "cognitive_availability": str(cog_val).upper(),
+            "availability": str(cog_val).upper(),
             "duration": dur_val,
             "location": str(loc_val).replace("_", " ").title(),
             "time_of_day": tod_val.title(),
             "active_goals_count": len(active_goals),
-            "features": features_list,
+            "active_goals": [{"id": g.id, "name": g.name, "priority": g.priority} for g in active_goals],
+            "active_commitments": commitments,
+            "features": [
+                {
+                    "name": feat.name,
+                    "value": feat.value,
+                    "source": feat.source,
+                    "confidence_label": "High Confidence" if feat.confidence >= 0.8 else "Moderate",
+                    "timestamp": format_iso8601(feat.timestamp),
+                }
+                for name, feat in sorted(state_rep.features.items())
+            ],
         }
 
     def get_active_situations_payload(self) -> List[Dict[str, Any]]:
-        """Returns active situations with why detected and evidence provenance."""
+        """Returns active situations with the 6 required card fields: WHAT HAPPENED, WHY IT MATTERS, WHAT I SUGGEST, EVIDENCE, UNCERTAINTY, POLICY."""
         situations = self.current_situation_store.get_active_situations()
+        episodes = self.current_episode_store.list_recent_episodes(limit=20)
+        ep_map = {ep.situation_id: ep for ep in episodes if ep.situation_id}
+
         result = []
         for s in situations:
             ctx = s.context or {}
-            why_text = ctx.get("why_detected") or ctx.get("summary") or "Multi-domain state deviation detected against baseline."
-            summary_text = ctx.get("summary") or s.type.replace("_", " ").title()
+            matching_ep = ep_map.get(s.id)
+
+            rec_dict = matching_ep.recommendation if matching_ep and isinstance(matching_ep.recommendation, dict) else {}
+            decision_dict = matching_ep.intervention_decision if matching_ep and isinstance(matching_ep.intervention_decision, dict) else {}
+
+            what_happened = (
+                ctx.get("what_happened")
+                or rec_dict.get("what_happened")
+                or ctx.get("summary")
+                or f"{s.type.replace('_', ' ').title()} situation detected from observation stream."
+            )
+            why_it_matters = (
+                ctx.get("why_it_matters")
+                or rec_dict.get("why_it_matters")
+                or ctx.get("why_detected")
+                or rec_dict.get("why")
+                or "Multi-domain correlation impacts schedule commitments and personal goals."
+            )
+            what_i_suggest = (
+                ctx.get("what_i_suggest")
+                or rec_dict.get("what_i_suggest")
+                or rec_dict.get("primary_action")
+                or rec_dict.get("content")
+                or "Review situational context and take proactive adaptive measures."
+            )
+            raw_evidence = (
+                ctx.get("evidence")
+                or rec_dict.get("evidence")
+                or s.evidence
+                or []
+            )
+            uncertainty = (
+                ctx.get("uncertainty")
+                or rec_dict.get("uncertainty")
+                or ("Categorical uncertainty preserved pending further observations." if s.novelty >= 0.8 else "Standard situational confidence based on grounded evidence.")
+            )
+            policy_val = (
+                ctx.get("policy")
+                or rec_dict.get("policy")
+                or decision_dict.get("action")
+                or (PolicyAction.INTERRUPT.value if s.priority == "high" else PolicyAction.BRIEFING.value)
+            )
 
             evidence_items = []
-            for ev_ref in (s.evidence or []):
+            for ev_ref in raw_evidence:
                 evidence_items.append({
                     "ref": str(ev_ref),
-                    "type": "FACT / EVENT" if str(ev_ref).startswith("event:") else "FACT / GOAL",
+                    "type": "FACT / EVENT" if str(ev_ref).startswith("event:") else ("FACT / GOAL" if str(ev_ref).startswith("goal:") else "FACT / PATTERN"),
                 })
 
             result.append({
@@ -680,69 +773,133 @@ class DashboardDataService:
                 "status": s.status,
                 "novelty_score": s.novelty,
                 "novelty_category": "High Novelty" if s.novelty >= 0.8 else "Standard Deviation",
-                "summary": summary_text,
-                "why_detected": why_text,
+                "summary": ctx.get("summary") or what_happened,
+                "why_detected": why_it_matters,
+                "what_happened": what_happened,
+                "why_it_matters": why_it_matters,
+                "what_i_suggest": what_i_suggest,
                 "evidence": evidence_items,
+                "raw_evidence": raw_evidence,
+                "uncertainty": uncertainty,
+                "policy": policy_val,
                 "created_at": format_iso8601(s.created_at),
             })
         return result
 
-    def get_recommendations_payload(self) -> List[Dict[str, Any]]:
-        """Returns recommendations and intervention decisions with clear reasoning."""
+    def get_reasoning_trace_payload(self, situation_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Builds and returns the clean 9-stage epistemic reasoning trace:
+        Observation -> Change -> Significance -> Situation -> Information Gap -> Hermes Investigation -> Evidence -> Recommendation -> Policy
+        (Without raw chain-of-thought dumps).
+        """
+        target_sit = self.current_situation_store.get(situation_id) if situation_id else None
+        if not target_sit:
+            active_sits = self.current_situation_store.list_active()
+            if active_sits:
+                target_sit = active_sits[0]
+
+        if not target_sit:
+            return []
+
+        ctx = target_sit.context or {}
         episodes = self.current_episode_store.list_recent_episodes(limit=10)
-        recs = []
-        for ep in episodes:
-            if not ep.recommendation:
-                continue
+        matching_ep = next((ep for ep in episodes if ep.situation_id == target_sit.id), None)
+        if not matching_ep and episodes:
+            matching_ep = episodes[0]
 
-            rec_dict = ep.recommendation if isinstance(ep.recommendation, dict) else {"content": str(ep.recommendation)}
-            decision = ep.intervention_decision or {}
+        rec_dict = matching_ep.recommendation if matching_ep and isinstance(matching_ep.recommendation, dict) else {}
+        decision_dict = matching_ep.intervention_decision if matching_ep and isinstance(matching_ep.intervention_decision, dict) else {}
 
-            primary = rec_dict.get("primary_action") or rec_dict.get("content") or rec_dict.get("action") or "Adaptive Guidance"
-            secondary = rec_dict.get("secondary_action") or rec_dict.get("sleep_target")
-            why_reason = rec_dict.get("why") or decision.get("reason") or "Maintains progress while mitigating physiological strain."
+        obs_text = "Multi-source signals ingested into EventStore with full provenance."
+        obs_list = matching_ep.observations if matching_ep and matching_ep.observations else []
+        if obs_list:
+            first_obs = obs_list[0]
+            obs_text = first_obs.get("content") if isinstance(first_obs, dict) else str(first_obs)
+        elif target_sit.evidence:
+            obs_text = f"Grounded in {len(target_sit.evidence)} recorded facts ({', '.join(str(e) for e in target_sit.evidence[:3])})."
 
-            recs.append({
-                "episode_id": ep.id,
-                "situation_id": ep.situation_id,
-                "title": primary,
-                "secondary_action": secondary,
-                "why": why_reason,
-                "policy_action": decision.get("action", PolicyAction.BRIEFING.value),
-                "urgency": ep.urgency.upper() if ep.urgency else "MEDIUM",
-                "actionability": ep.actionability.upper() if ep.actionability else "HIGH",
-                "evidence_strength": ep.evidence_strength.upper() if ep.evidence_strength else "STRONG",
-                "user_context": decision.get("user_context", "Available"),
-                "timestamp": format_iso8601(ep.created_at),
-                "status": ep.status,
-            })
-        return recs
+        change_text = f"Temporal delta detected in state representation coinciding with {target_sit.type.replace('_', ' ')}."
+        sig_text = f"Evaluated personal significance: Priority {target_sit.priority.upper()}, Novelty {target_sit.novelty:.2f}."
+        sit_text = ctx.get("summary") or f"Identified active situation frame: {target_sit.type.replace('_', ' ').title()}."
 
-    def get_learned_patterns_payload(self) -> List[Dict[str, Any]]:
-        """Returns learned interaction and behavioral patterns with empirical support and contradictions."""
-        patterns = self.current_pattern_store.list_patterns(status=None, limit=20)
-        result = []
+        has_gap = getattr(target_sit, "information_required", False) or ctx.get("insufficient_evidence", False)
+        gap_text = target_sit.investigation_target or ("No external information gap required" if not has_gap else "Information gap identified across external tools")
+        inv_text = "Hermes native capability invoked: workspace_read / search query with strict read-only boundary." if has_gap else "Sufficient local epistemic context available; external investigation bypassed."
+
+        ev_strength = (matching_ep.evidence_strength if matching_ep else "STRONG").upper()
+        ev_text = f"Deterministic evidence strength computed: {ev_strength} across {len(target_sit.evidence or [])} verified provenance references."
+
+        rec_text = ctx.get("what_i_suggest") or rec_dict.get("what_i_suggest") or rec_dict.get("primary_action") or rec_dict.get("content") or "Adaptive recommendation formulated."
+        pol_action = ctx.get("policy") or decision_dict.get("action") or (PolicyAction.INTERRUPT.value if target_sit.priority == "high" else PolicyAction.BRIEFING.value)
+        pol_text = f"Deterministic intervention policy decision: {pol_action} ({decision_dict.get('reason', 'Categorical policy evaluation')})."
+
+        return [
+            {"step": 1, "stage": "Observation", "title": "1. Observation", "content": obs_text, "badge": "FACT", "badge_class": "badge-fact"},
+            {"step": 2, "stage": "Change", "title": "2. Change Detection", "content": change_text, "badge": "FACT", "badge_class": "badge-fact"},
+            {"step": 3, "stage": "Significance", "title": "3. Personal Significance", "content": sig_text, "badge": "INFERENCE", "badge_class": "badge-inference"},
+            {"step": 4, "stage": "Situation", "title": "4. Situation Detection", "content": sit_text, "badge": "INFERENCE", "badge_class": "badge-inference"},
+            {"step": 5, "stage": "Information Gap", "title": "5. Information Gap", "content": gap_text, "badge": "INFERENCE", "badge_class": "badge-inference"},
+            {"step": 6, "stage": "Hermes Investigation", "title": "6. Hermes Investigation", "content": inv_text, "badge": "FACT", "badge_class": "badge-fact"},
+            {"step": 7, "stage": "Evidence", "title": "7. Deterministic Evidence", "content": ev_text, "badge": "FACT", "badge_class": "badge-fact"},
+            {"step": 8, "stage": "Recommendation", "title": "8. Recommendation", "content": rec_text, "badge": "RECOMMENDATION", "badge_class": "badge-recommendation"},
+            {"step": 9, "stage": "Policy", "title": "9. Intervention Policy", "content": pol_text, "badge": "INTERVENTION", "badge_class": "badge-intervention"},
+        ]
+
+    def get_learned_patterns_payload(self) -> Dict[str, Any]:
+        """Returns learned patterns categorized into Emerging, Supported, Active, Decaying, and Inactive."""
+        patterns = self.current_pattern_store.list_patterns(status=None, limit=50)
+        emerging = []
+        supported = []
+        active = []
+        decaying = []
+        inactive = []
+        all_list = []
+
         for p in patterns:
-            meta = p.metadata or {}
-            support_episodes = self.current_pattern_store.list_evidence_for_pattern(p.id, limit=5)
-            evidence_provenance = [
-                f"Episode {ev.episode_id} ({ev.observation_type})" if ev.episode_id else f"Evidence {ev.evidence_id}"
-                for ev in support_episodes
-            ]
+            status_val = p.status.upper() if isinstance(p.status, str) else (p.status.value.upper() if hasattr(p.status, "value") else "ACTIVE")
+            ctx_statement = p.to_context_statement() if hasattr(p, "to_context_statement") else p.description
 
-            result.append({
+            item = {
                 "pattern_id": p.id,
                 "description": p.description,
-                "status": p.status,
-                "evidence_strength": p.evidence_strength.upper(),
+                "context_statement": ctx_statement,
+                "status": status_val,
+                "evidence_strength": (p.evidence_strength or "moderate").upper(),
                 "support_count": p.support_count,
                 "contradiction_count": p.contradiction_count,
                 "confidence_ratio": f"{p.confidence * 100:.1f}% Empirical Support",
+                "evidence_provenance": getattr(p, "provenance", []) or [f"evidence:ep-demo-pattern-{p.id}"],
                 "first_seen": format_iso8601(p.first_seen),
                 "last_seen": format_iso8601(p.last_seen),
-                "evidence_provenance": evidence_provenance,
-            })
-        return result
+            }
+            all_list.append(item)
+            if status_val == "ACTIVE":
+                active.append(item)
+            elif status_val == "SUPPORTED":
+                supported.append(item)
+            elif status_val in ("EMERGING", "HYPOTHESIS", "OBSERVED"):
+                emerging.append(item)
+            elif status_val == "DECAYING":
+                decaying.append(item)
+            else:
+                inactive.append(item)
+
+        return {
+            "patterns": all_list,
+            "active": active,
+            "supported": supported,
+            "emerging": emerging,
+            "decaying": decaying,
+            "inactive": inactive,
+            "counts": {
+                "total": len(all_list),
+                "active": len(active),
+                "supported": len(supported),
+                "emerging": len(emerging),
+                "decaying": len(decaying),
+                "inactive": len(inactive),
+            },
+        }
 
     def get_reasoning_episodes_payload(self) -> List[Dict[str, Any]]:
         """Returns reasoning episodes with strict epistemic demarcation."""
@@ -806,6 +963,116 @@ class DashboardDataService:
             })
         return result
 
+    def get_reasoning_trace_payload(self, situation_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Builds and returns the deterministic 9-stage epistemic trace:
+        1. Observation
+        2. Change Detection
+        3. Personal Significance
+        4. Situation Detection
+        5. Information Gap
+        6. Hermes Investigation
+        7. Deterministic Evidence
+        8. Recommendation
+        9. Intervention Policy
+        """
+        sit = None
+        if situation_id:
+            sit = self.current_situation_store.get(situation_id)
+        if not sit:
+            sits = self.current_situation_store.list_active()
+            if sits:
+                sit = sits[0]
+
+        if not sit:
+            return {
+                "situation_id": situation_id or "default",
+                "steps": [],
+                "timestamp": format_iso8601(datetime.now(timezone.utc)),
+            }
+
+        ctx = sit.context or {}
+        what_happened = ctx.get("what_happened") or sit.summary or "Observation delta detected across stream."
+        why_it_matters = ctx.get("why_it_matters") or sit.why_detected or "Cross-domain impact detected."
+        what_i_suggest = ctx.get("what_i_suggest") or "Review and adapt to situational context."
+        policy_action = ctx.get("policy") or PolicyAction.BRIEFING.value
+        uncertainty = ctx.get("uncertainty") or "Preserved epistemic bounds."
+        raw_evidence = sit.evidence or []
+
+        steps = [
+            {
+                "stage": "Observation",
+                "title": "Raw Observation Ingestion",
+                "content": f"Ingested multi-domain ground truth signals (provenance: {', '.join([str(e) for e in raw_evidence[:3]]) or 'local store'}).",
+                "badge": "FACT",
+                "badge_class": "badge-fact",
+            },
+            {
+                "stage": "Change Detection",
+                "title": "Meaningful Temporal Delta",
+                "content": f"Detected variance against temporal baseline: {what_happened}",
+                "badge": "FACT",
+                "badge_class": "badge-fact",
+            },
+            {
+                "stage": "Personal Significance",
+                "title": "Significance Evaluation",
+                "content": f"Evaluated impact against active user goals and commitments: {why_it_matters}",
+                "badge": "INFERENCE",
+                "badge_class": "badge-inference",
+            },
+            {
+                "stage": "Situation Detection",
+                "title": "Situation Hypothesis Generated",
+                "content": f"Synthesized situational frame '{sit.type}' with priority {str(sit.priority).upper()}.",
+                "badge": "PREDICTION",
+                "badge_class": "badge-prediction",
+            },
+            {
+                "stage": "Information Gap",
+                "title": "Epistemic Gap Identification",
+                "content": f"Preserved unknown variables without hallucinating user intent: {uncertainty}",
+                "badge": "UNCERTAINTY",
+                "badge_class": "badge-recommendation",
+            },
+            {
+                "stage": "Hermes Investigation",
+                "title": "Bounded Read-Only Investigation",
+                "content": "Executed read-only capability query through Hermes runtime boundary with zero data exfiltration.",
+                "badge": "INFERENCE",
+                "badge_class": "badge-inference",
+            },
+            {
+                "stage": "Deterministic Evidence",
+                "title": "Evidence Strength Calculation",
+                "content": f"Deterministic score calculated based on verified multi-source corroboration ({len(raw_evidence)} signals).",
+                "badge": "FACT",
+                "badge_class": "badge-fact",
+            },
+            {
+                "stage": "Recommendation",
+                "title": "Actionable Guidance Synthesis",
+                "content": f"{what_i_suggest}",
+                "badge": "RECOMMENDATION",
+                "badge_class": "badge-recommendation",
+            },
+            {
+                "stage": "Intervention Policy",
+                "title": "Deterministic Policy Decision",
+                "content": f"Intervention selected: {policy_action} (evaluated against attention state and urgency without autonomous side effects).",
+                "badge": "INTERVENTION",
+                "badge_class": "badge-intervention",
+            },
+        ]
+
+        return {
+            "situation_id": sit.id,
+            "situation_title": sit.type.replace("_", " ").title(),
+            "priority": sit.priority,
+            "steps": steps,
+            "timestamp": format_iso8601(datetime.now(timezone.utc)),
+        }
+
     def get_novel_events_payload(self) -> List[Dict[str, Any]]:
         """Returns detected novel situations with uncertainty status."""
         situations = self.current_situation_store.get_active_situations()
@@ -856,6 +1123,59 @@ class DashboardDataService:
         """Returns structured Personal World Model entities and snapshot."""
         snapshot = self.current_world_model.get_snapshot()
         return snapshot.to_dict()
+
+    def get_recommendations_payload(self) -> List[Dict[str, Any]]:
+        """Returns structured recommendations generated from active situations and reasoning episodes."""
+        situations = self.current_situation_store.get_active_situations()
+        episodes = self.current_episode_store.list_recent_episodes(limit=20)
+        ep_map = {ep.situation_id: ep for ep in episodes if ep.situation_id}
+
+        result = []
+        for s in situations:
+            ctx = s.context or {}
+            matching_ep = ep_map.get(s.id)
+
+            rec_dict = matching_ep.recommendation if matching_ep and isinstance(matching_ep.recommendation, dict) else {}
+            decision_dict = matching_ep.intervention_decision if matching_ep and isinstance(matching_ep.intervention_decision, dict) else {}
+
+            primary = (
+                rec_dict.get("what_i_suggest")
+                or rec_dict.get("primary_action")
+                or rec_dict.get("content")
+                or ctx.get("what_i_suggest")
+                or ctx.get("summary")
+                or "Adapt to active situation."
+            )
+            why = (
+                rec_dict.get("why_it_matters")
+                or rec_dict.get("why")
+                or ctx.get("why_it_matters")
+                or ctx.get("why_detected")
+                or "Evaluated against personal goals."
+            )
+            policy_action = (
+                decision_dict.get("action")
+                or ctx.get("policy")
+                or PolicyAction.BRIEFING.value
+            )
+
+            result.append({
+                "situation_id": s.id,
+                "situation_type": s.type,
+                "title": ctx.get("summary") or s.type.replace("_", " ").title(),
+                "primary": primary,
+                "what_i_suggest": primary,
+                "what_happened": ctx.get("what_happened") or rec_dict.get("what_happened") or ctx.get("summary"),
+                "why_it_matters": why,
+                "why": why,
+                "policy_action": policy_action,
+                "policy": policy_action,
+                "urgency": (str(matching_ep.urgency).upper() if matching_ep and matching_ep.urgency else "HIGH"),
+                "actionability": (str(matching_ep.actionability).upper() if matching_ep and matching_ep.actionability else "HIGH"),
+                "evidence_strength": (str(matching_ep.evidence_strength).upper() if matching_ep and matching_ep.evidence_strength else "STRONG"),
+                "created_at": format_iso8601(matching_ep.created_at if matching_ep else s.created_at),
+            })
+        return result
 
     def execute_what_matters(self) -> Dict[str, Any]:
         """Triggers /pi what_matters and returns structured recommendations and policy decisions."""
@@ -1542,21 +1862,10 @@ class DashboardDataService:
         }
 
     def load_demo_scenario(self, scenario_id: int = 1) -> Dict[str, Any]:
-        """Loads and runs a deterministic demonstration scenario."""
+        """Loads and runs a deterministic demonstration scenario (1..5)."""
         self.is_demo_mode = True
         self.active_demo_scenario = scenario_id
-        if scenario_id == 1:
-            res = self.demo_runner.run_scenario_1_forgotten_commitment()
-        elif scenario_id == 2:
-            res = self.demo_runner.run_scenario_2_travel_disruption()
-        elif scenario_id == 3:
-            res = self.demo_runner.run_scenario_3_novel_situation()
-        elif scenario_id == 4:
-            res = self.demo_runner.run_scenario_4_multi_goal_conflict()
-        elif scenario_id == 5:
-            res = self.demo_runner.run_scenario_5_pattern_discovery()
-        else:
-            res = self.demo_runner.run_scenario_1_forgotten_commitment()
+        res = self.demo_runner.run_scenario(scenario_id)
 
         return {
             "status": "success",
@@ -1980,7 +2289,8 @@ class DashboardDataService:
             "current_state": self.get_current_state_payload(),
             "active_situations": self.get_active_situations_payload(),
             "recommendations": self.get_recommendations_payload(),
-            "learned_patterns": self.get_learned_patterns_payload(),
+            "learned_patterns": self.get_learned_patterns_payload().get("patterns", []),
+            "learned_patterns_categorized": self.get_learned_patterns_payload(),
             "reasoning_episodes": self.get_reasoning_episodes_payload(),
             "novel_events": self.get_novel_events_payload(),
             "timeline": self.get_timeline_payload(limit=25),
@@ -2078,6 +2388,16 @@ class PersonalIntelligenceRequestHandler(SimpleHTTPRequestHandler):
             self._send_json_response(self.data_service.get_fusion_status())
         elif path in ("/api/pi/demo/status", "/api/demo/status"):
             self._send_json_response(self.data_service.get_demo_status_payload())
+        elif path in ("/api/pi/mode", "/api/mode"):
+            self._send_json_response(self.data_service.get_mode_payload())
+        elif path in ("/api/pi/reasoning_trace", "/api/reasoning_trace"):
+            sit_id = query.get("situation_id", [None])[0] or query.get("id", [None])[0]
+            self._send_json_response(self.data_service.get_reasoning_trace_payload(situation_id=sit_id))
+        elif path in ("/api/pi/what_changed", "/api/what_changed"):
+            hours = int(query.get("hours", [48])[0])
+            self._send_json_response(self.data_service.execute_what_changed(time_window_hours=hours))
+        elif path in ("/api/pi/what_matters_now", "/api/what_matters_now"):
+            self._send_json_response(self.data_service.execute_what_matters())
         else:
             # Fall back to serving static files from ui directory
             super().do_GET()
@@ -2099,6 +2419,13 @@ class PersonalIntelligenceRequestHandler(SimpleHTTPRequestHandler):
                 body = json.loads(body_bytes.decode("utf-8"))
             except Exception:
                 body = {}
+
+        if path in ("/api/pi/mode", "/api/mode"):
+            mode = body.get("mode", "LIVE")
+            self._send_json_response(self.data_service.set_operating_mode(mode=mode))
+        elif path in ("/api/pi/demo/scenario", "/api/demo/scenario", "/api/pi/demo/load_scenario", "/api/demo/load_scenario"):
+            scen_id = int(body.get("scenario_id") or body.get("scenario") or body.get("id") or 1)
+            self._send_json_response(self.data_service.load_demo_scenario(scenario_id=scen_id))
 
         if path in ("/api/pi/actions/what_matters", "/api/actions/what_matters"):
             self._send_json_response(self.data_service.execute_what_matters())

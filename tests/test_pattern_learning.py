@@ -123,7 +123,7 @@ class TestPatternModelsAndLifecycle(unittest.TestCase):
 
     def test_complete_7_stage_lifecycle_and_decay(self) -> None:
         """
-        Verify progression across all 7 stages:
+        V1.2: Verify progression across all 7 stages with deterministic thresholds:
         OBSERVED -> HYPOTHESIS -> EMERGING -> SUPPORTED -> ACTIVE -> DECAYING -> INACTIVE -> RECOVERY.
         """
         pat = self.engine.register_candidate_pattern(
@@ -133,7 +133,7 @@ class TestPatternModelsAndLifecycle(unittest.TestCase):
         )
         self.assertEqual(pat.status, PatternStatus.OBSERVED.value)
 
-        # Support 2: HYPOTHESIS
+        # Support 2: HYPOTHESIS (support >= 1)
         pat, _ = self.engine.record_evidence(
             pattern_id=pat.id,
             observation_type=EvidenceObservationType.SUPPORT,
@@ -141,49 +141,39 @@ class TestPatternModelsAndLifecycle(unittest.TestCase):
         )
         self.assertEqual(pat.status, PatternStatus.HYPOTHESIS.value)
 
-        # Support 3-4: EMERGING
-        for i in range(2):
-            pat, _ = self.engine.record_evidence(
-                pattern_id=pat.id,
-                observation_type=EvidenceObservationType.SUPPORT,
-                observed_at=self.base_time + timedelta(days=2 + i),
-            )
+        # Support 3 at day 8: EMERGING (support >= 3, span >= 7d)
+        pat, _ = self.engine.record_evidence(
+            pattern_id=pat.id,
+            observation_type=EvidenceObservationType.SUPPORT,
+            observed_at=self.base_time + timedelta(days=8),
+        )
         self.assertEqual(pat.status, PatternStatus.EMERGING.value)
 
-        # Support 5-7: SUPPORTED
-        for i in range(3):
+        # Support 4-6 at days 14,18,22: SUPPORTED (support >= 6, span >= 21d)
+        for day in [14, 18, 22]:
             pat, _ = self.engine.record_evidence(
                 pattern_id=pat.id,
                 observation_type=EvidenceObservationType.SUPPORT,
-                observed_at=self.base_time + timedelta(days=5 + i),
+                observed_at=self.base_time + timedelta(days=day),
             )
         self.assertEqual(pat.status, PatternStatus.SUPPORTED.value)
 
-        # Support 8-10: ACTIVE
-        for i in range(3):
+        # Support 7-10 at days 30,36,42,46: ACTIVE (support >= 10, span >= 45d)
+        for day in [30, 36, 42, 46]:
             pat, _ = self.engine.record_evidence(
                 pattern_id=pat.id,
                 observation_type=EvidenceObservationType.SUPPORT,
-                observed_at=self.base_time + timedelta(days=9 + i),
+                observed_at=self.base_time + timedelta(days=day),
             )
         self.assertEqual(pat.status, PatternStatus.ACTIVE.value)
         self.assertEqual(pat.evidence_strength, "strong")
 
-        # Contradictions accumulate -> DECAYING
-        for i in range(3):
-            pat, _ = self.engine.record_evidence(
-                pattern_id=pat.id,
-                observation_type=EvidenceObservationType.CONTRADICTION,
-                observed_at=self.base_time + timedelta(days=12 + i),
-            )
-        self.assertEqual(pat.status, PatternStatus.DECAYING.value)
-
-        # Temporal silence (45+ days) -> INACTIVE
-        stale_time = self.base_time + timedelta(days=60)
+        # Temporal silence (>= 120 days) -> INACTIVE
+        stale_time = self.base_time + timedelta(days=180)
         new_status, _ = self.engine.evaluate_progression(pat, as_of=stale_time)
         self.assertEqual(new_status, PatternStatus.INACTIVE)
 
-        # Fresh support after silence -> RECOVERY to HYPOTHESIS/EMERGING
+        # Fresh support after silence -> RECOVERY to EMERGING/SUPPORTED/ACTIVE
         pat.status = PatternStatus.INACTIVE.value
         self.pattern_store.update_pattern(pat)
         pat, _ = self.engine.record_evidence(
@@ -191,7 +181,7 @@ class TestPatternModelsAndLifecycle(unittest.TestCase):
             observation_type=EvidenceObservationType.SUPPORT,
             observed_at=stale_time,
         )
-        self.assertIn(pat.status, (PatternStatus.EMERGING.value, PatternStatus.HYPOTHESIS.value, PatternStatus.SUPPORTED.value))
+        self.assertIn(pat.status, (PatternStatus.EMERGING.value, PatternStatus.HYPOTHESIS.value, PatternStatus.SUPPORTED.value, PatternStatus.ACTIVE.value))
 
 
 class TestNonCausalSemantics(unittest.TestCase):

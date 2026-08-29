@@ -129,6 +129,36 @@ class Pattern:
         elif isinstance(self.pattern_type, str):
             self.pattern_type = self.pattern_type.strip().upper()
         self.evidence_strength = str(self.evidence_strength).strip().lower()
+        self.description = self._sanitize_non_causal(self.description)
+
+    @staticmethod
+    def _sanitize_non_causal(text: str) -> str:
+        """Sanitizes causal claims into non-causal empirical associations."""
+        phrasing = str(text or "").strip()
+        causal_replacements = {
+            " causes ": " appears associated with ",
+            " cause ": " appear associated with ",
+            " leads to ": " appears correlated with ",
+            " lead to ": " appear correlated with ",
+            " results in ": " is frequently followed by ",
+            " result in ": " are frequently followed by ",
+            " will happen": " has historically occurred in similar situations",
+        }
+        for causal_word, assoc_word in causal_replacements.items():
+            if causal_word in phrasing:
+                phrasing = phrasing.replace(causal_word, assoc_word)
+        return phrasing
+
+    @property
+    def lifecycle_status(self) -> str:
+        """Standard lifecycle status alias."""
+        return self.status
+
+    @property
+    def recency(self) -> float:
+        """Calculates days since last seen relative to current time."""
+        now = datetime.now(timezone.utc)
+        return round(max(0.0, (now - self.last_seen).total_seconds() / 86400.0), 2)
 
     @property
     def first_observed(self) -> datetime:
@@ -159,6 +189,16 @@ class Pattern:
         return obs
 
     @property
+    def supporting_observations(self) -> List[str]:
+        """Alias for source_observations."""
+        return self.source_observations
+
+    @property
+    def contradicting_observations(self) -> List[str]:
+        """Returns list of contradicting observation/event IDs."""
+        return list(self.metadata.get("contradicting_event_ids", []))
+
+    @property
     def supporting_evidence(self) -> List[str]:
         """Returns consolidated list of supporting evidence (episodes, observations, and state signals)."""
         supp = list(self.metadata.get("supporting_evidence", []))
@@ -177,7 +217,7 @@ class Pattern:
         for ep in self.contradicting_episodes:
             if ep not in contra:
                 contra.append(ep)
-        for obs in self.metadata.get("contradicting_event_ids", []):
+        for obs in self.contradicting_observations:
             if obs not in contra:
                 contra.append(obs)
         return contra
@@ -205,6 +245,16 @@ class Pattern:
         """Returns list of contradicting reasoning episode IDs referenced by this pattern."""
         return list(self.metadata.get("contradicting_episodes", []))
 
+    def to_context_statement(self) -> str:
+        """
+        Formats the pattern as an epistemic context statement for reasoning.
+        Guarantees non-causal, non-deterministic framing ('Historically, similar situations were often followed by...').
+        """
+        desc = self.description.strip()
+        if not desc.startswith(("Historically,", "Observed association:", "User appears", "Calendar", "Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays", "Sundays")):
+            return f"Historically, similar situations were often followed by: {desc}"
+        return desc
+
     def to_dict(self) -> Dict[str, Any]:
         """Serializes pattern to dictionary."""
         return {
@@ -212,6 +262,7 @@ class Pattern:
             "pattern_id": self.id,
             "pattern_type": self.pattern_type,
             "description": self.description,
+            "context_statement": self.to_context_statement(),
             "first_seen": format_iso8601(self.first_seen),
             "last_seen": format_iso8601(self.last_seen),
             "first_observed": format_iso8601(self.first_seen),
@@ -220,11 +271,15 @@ class Pattern:
             "contradiction_count": self.contradiction_count,
             "evidence_strength": self.evidence_strength,
             "status": self.status,
+            "lifecycle_status": self.status,
             "decay_state": self.decay_state,
             "confidence": self.confidence,
+            "recency_days": self.recency,
             "supporting_evidence": self.supporting_evidence,
             "contradicting_evidence": self.contradicting_evidence,
             "source_observations": self.source_observations,
+            "supporting_observations": self.supporting_observations,
+            "contradicting_observations": self.contradicting_observations,
             "supporting_episodes": self.supporting_episodes,
             "contradicting_episodes": self.contradicting_episodes,
             "metadata": self.metadata,

@@ -66,19 +66,39 @@ class SituationLifecycleManager:
         next_evaluation_at: Optional[datetime] = None,
     ) -> Tuple[Situation, bool]:
         """
-        Registers a new situation or updates an existing active situation of the same type.
-        Maintains situation identity across evaluations to prevent duplicate situations.
+        Registers a new situation or updates an existing situation using deterministic identity.
+        
+        Deduplication rules:
+          1. Exact duplicate (no new evidence/context) -> Returns existing without duplicate creation
+          2. Same situation with material new evidence -> Updates existing situation and advances timestamps
+          3. Different entity, trigger, or goal set -> Creates NEW situation
+        
         Returns (situation, is_new: bool).
         """
         now = datetime.now(timezone.utc)
+        cand_identity = candidate_situation.get_deterministic_identity()
 
-        # 1. Check for existing active situation of the same type
-        existing = self.situation_store.find_active_by_type(
-            situation_type=candidate_situation.type,
-            related_goals=candidate_situation.related_goals,
-        )
+        # 1. Check for existing active or recently resolved situation matching identity or type+goals
+        active_situations = self.situation_store.list_active()
+        existing = None
+
+        for s in active_situations:
+            if s.get_deterministic_identity() == cand_identity:
+                existing = s
+                break
+
+        if existing is None:
+            existing = self.situation_store.find_active_by_type(
+                situation_type=candidate_situation.type,
+                related_goals=candidate_situation.related_goals,
+            )
 
         if existing is not None:
+            # Check for material new evidence
+            existing_ev_set = set(str(e) for e in existing.evidence)
+            new_ev_items = [e for e in candidate_situation.evidence if str(e) not in existing_ev_set]
+            has_material_change = bool(new_ev_items) or (candidate_situation.priority != existing.priority)
+
             # Maintain identity: merge evidence, update context, advance timestamps
             merged_evidence = list(existing.evidence)
             for ev in candidate_situation.evidence:
@@ -93,6 +113,9 @@ class SituationLifecycleManager:
             merged_context = dict(existing.context)
             merged_context.update(candidate_situation.context)
             merged_context["last_candidate_evaluation"] = format_iso8601(now)
+            merged_context["deterministic_identity"] = cand_identity
+            if has_material_change:
+                merged_context["last_material_change_at"] = format_iso8601(now)
 
             new_next_eval = next_evaluation_at if next_evaluation_at is not None else existing.next_evaluation_at
             new_status = existing.status
@@ -113,16 +136,20 @@ class SituationLifecycleManager:
             )
             return (updated or existing, False)
 
-        # 2. No active situation exists: Persist new situation
+        # 2. No matching situation exists: Persist new situation
         init_status = candidate_situation.status or SituationStatus.OPEN.value
         if next_evaluation_at is not None and init_status == SituationStatus.OPEN.value:
             init_status = SituationStatus.MONITORING.value
+
+        init_context = dict(candidate_situation.context)
+        init_context["deterministic_identity"] = cand_identity
+        init_context["last_material_change_at"] = format_iso8601(now)
 
         new_sit = self.situation_store.create(
             type=candidate_situation.type,
             priority=candidate_situation.priority,
             novelty=candidate_situation.novelty,
-            context=candidate_situation.context,
+            context=init_context,
             evidence=candidate_situation.evidence,
             related_goals=candidate_situation.related_goals,
             expires_at=candidate_situation.expires_at,
