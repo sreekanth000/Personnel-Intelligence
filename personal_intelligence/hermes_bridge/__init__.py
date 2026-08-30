@@ -68,6 +68,12 @@ from personal_intelligence.hermes_bridge.reasoning import (
     validate_reasoning_synthesis,
 )
 
+from personal_intelligence.hermes_bridge.pollers import (
+    HermesCalendarPoller,
+    HermesGenericPoller,
+    HermesGmailPoller,
+)
+
 from personal_intelligence.hermes_bridge.situation_investigation import (
     BoundedInvestigationRequest,
     CrossSourceEvidenceBundle,
@@ -119,6 +125,9 @@ __all__ = [
     "InvestigationTerminationReason",
     "CrossSourceEvidenceBundle",
     "UnauthorizedWriteOperationError",
+    "HermesGmailPoller",
+    "HermesCalendarPoller",
+    "HermesGenericPoller",
 ]
 
 

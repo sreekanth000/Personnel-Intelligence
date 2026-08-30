@@ -18,6 +18,7 @@ project_root = Path(__file__).resolve().parent
 sys.path.insert(0, str(project_root))
 
 from personal_intelligence.api.server import create_dashboard_server
+from personal_intelligence.storage.db import DatabaseManager
 
 if __name__ == "__main__":
     port = 8080
@@ -26,7 +27,11 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1].isdigit():
         port = int(sys.argv[1])
 
-    server = create_dashboard_server(port=port, host=host)
+    db_path = os.environ.get("PI_DB_PATH", os.path.expanduser("~/.personal_intelligence/pi_data.db"))
+    db = DatabaseManager(db_path)
+    db.initialize_schema()
+
+    server = create_dashboard_server(port=port, host=host, db_manager=db)
     print("=" * 70)
     print("  [+] PERSONAL INTELLIGENCE DEMO & LIVE DASHBOARD")
     print("=" * 70)

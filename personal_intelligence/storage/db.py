@@ -40,11 +40,24 @@ class DatabaseManager:
             self._anchor_conn = sqlite3.connect(self.db_path, uri=True)
             self._anchor_conn.execute("PRAGMA foreign_keys = ON;")
         else:
-            self.db_path = db_path
-            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+            expanded_path = os.path.expanduser(db_path)
+            self.db_path = expanded_path
+            parent_dir = Path(self.db_path).parent
+            if str(parent_dir) and str(parent_dir) != ".":
+                parent_dir.mkdir(parents=True, exist_ok=True)
             self._anchor_conn = None
 
         self._active_conn_count = 0
+
+    @classmethod
+    def default_persistent(cls, db_name: str = "pi_data.db") -> "DatabaseManager":
+        """Returns a DatabaseManager instance pointing to ~/.personal_intelligence/<db_name> with schema initialized."""
+        data_dir = Path.home() / ".personal_intelligence"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        db_path = str(data_dir / db_name)
+        db = cls(db_path=db_path)
+        db.initialize_schema()
+        return db
 
     def get_connection(self) -> sqlite3.Connection:
         """Returns a configured SQLite connection with foreign keys enabled."""
@@ -70,6 +83,8 @@ class DatabaseManager:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON;")
+        conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("PRAGMA busy_timeout = 5000;")
         return conn
 
     def seal_encrypted_database(self, target_path: Optional[str] = None) -> str:

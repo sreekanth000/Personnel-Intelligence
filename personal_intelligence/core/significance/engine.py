@@ -25,6 +25,7 @@ from personal_intelligence.core.events.models import Event, ensure_timezone_awar
 from personal_intelligence.core.goals.models import Goal, GoalPriority
 from personal_intelligence.core.novelty.models import NoveltyResult
 from personal_intelligence.core.patterns.models import Pattern
+from personal_intelligence.core.significance.matching import GoalMatcher
 from personal_intelligence.core.significance.models import SignificanceAssessment, SignificanceLevel
 from personal_intelligence.core.state.models import StateRepresentation
 from personal_intelligence.core.timeline.models import Timeline
@@ -43,10 +44,12 @@ class PersonalSignificanceEngine:
         imminent_deadline_hours: float = 6.0,
         soon_deadline_hours: float = 24.0,
         upcoming_deadline_hours: float = 72.0,
+        goal_matcher: Optional[GoalMatcher] = None,
     ) -> None:
         self.imminent_deadline_hours = imminent_deadline_hours
         self.soon_deadline_hours = soon_deadline_hours
         self.upcoming_deadline_hours = upcoming_deadline_hours
+        self.goal_matcher = goal_matcher or GoalMatcher()
 
     def evaluate_change(
         self,
@@ -78,17 +81,28 @@ class PersonalSignificanceEngine:
         novelty_imp = "normal"
         actionability = "none"
 
-        # 1. Goal Relevance
+        # 1. Goal Relevance (using multi-strategy matcher)
         change_text = f"{change.what_changed} {change.why_it_matters} {' '.join(change.evidence)}".lower()
         matched_high_goals = []
         matched_critical_goals = []
+        matched_other_goals = []
         for g in goals:
-            g_name = g.name.lower()
-            if any(term in change_text for term in g_name.split() if len(term) > 3) or g_name in change_text:
-                if g.priority in (GoalPriority.CRITICAL.value, "critical"):
+            g_desc = getattr(g, "description", "") or ""
+            g_tags = getattr(g, "tags", None)
+            is_rel, score, match_reason = self.goal_matcher.is_relevant(
+                goal_name=g.name,
+                goal_description=g_desc,
+                goal_tags=g_tags,
+                context_text=change_text,
+            )
+            if is_rel:
+                prio = getattr(g, "priority", "medium")
+                if prio in (GoalPriority.CRITICAL.value, "critical"):
                     matched_critical_goals.append(g.name)
-                elif g.priority in (GoalPriority.HIGH.value, "high"):
+                elif prio in (GoalPriority.HIGH.value, "high"):
                     matched_high_goals.append(g.name)
+                else:
+                    matched_other_goals.append(g.name)
 
         if matched_critical_goals:
             goal_rel = "critical"
@@ -96,8 +110,11 @@ class PersonalSignificanceEngine:
         elif matched_high_goals:
             goal_rel = "high"
             reasons.append(f"Directly affects high-priority goal(s): {', '.join(matched_high_goals)}")
-        elif goals:
-            goal_rel = "low"
+        elif matched_other_goals:
+            goal_rel = "medium" if any(getattr(g, "priority", "") == GoalPriority.MEDIUM.value for g in goals if g.name in matched_other_goals) else "low"
+            reasons.append(f"Relates to active goal(s): {', '.join(matched_other_goals)}")
+        else:
+            goal_rel = "none"
 
         # 2. Commitment Relevance & Deadline Proximity
         overdue_commits = []
