@@ -26,9 +26,9 @@ class InvestigationStatus(str, Enum):
     FAILED = "FAILED"
 
 
-class PolicyAction(str, Enum):
+class PresentationAction(str, Enum):
     """
-    Categorical policy action returned by InterventionPolicyEngine.
+    Categorical presentation action returned by InterventionPolicyEngine.
     
     Governs ONLY how and when recommendations/alerts are presented to the user:
     - INTERRUPT: Proactively present recommendation to the user immediately.
@@ -46,6 +46,10 @@ class PolicyAction(str, Enum):
     DEFER = "DEFER"
     SUPPRESS = "SUPPRESS"
     DISCARD = "DISCARD"
+
+
+# Backward-compatible alias
+PolicyAction = PresentationAction
 
 
 class UserContext(str, Enum):
@@ -114,37 +118,44 @@ class InterventionDecision:
 
 
 @dataclass
-class PolicyEvaluationResult:
+class PresentationDecision:
     """
-    Structured outcome of an intervention policy evaluation.
+    Target public model for presentation routing decisions made by Personal Intelligence.
     Pure categorical assessment without numerical confidence scores.
     
     The canonical chain is:
     OBSERVATION -> INFERENCE -> PREDICTION -> RECOMMENDATION -> USER DECISION -> ACTION
     
-    The PolicyEvaluationResult governs ONLY the presentation mode of the recommendation
+    The PresentationDecision governs ONLY the presentation mode of the recommendation
     (INTERRUPT, BRIEFING, DEFER, SUPPRESS, DISCARD). It does not trigger external actions.
     """
     action: str
     reason: str
-    urgency: str
-    actionability: str
-    evidence_strength: str
-    user_context: str
+    urgency: str = "medium"
+    actionability: str = "medium"
+    evidence_strength: str = "strong"
+    user_context: str = "available"
     relevance: str = "medium"
+    personal_significance: Optional[str] = None
     situation_freshness: str = "fresh"
     already_notified: bool = False
     recently_dismissed: bool = False
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    evidence_quality: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if isinstance(self.action, PolicyAction):
+        if isinstance(self.action, (PresentationAction, PolicyAction)):
             self.action = self.action.value
         elif isinstance(self.action, str):
             self.action = self.action.strip().upper()
 
+        eq = self.evidence_quality or self.evidence_strength
+        self.evidence_quality = str(eq).lower() if eq else "strong"
+        self.evidence_strength = self.evidence_quality
+
     def to_dict(self) -> Dict[str, Any]:
-        """Serializes policy evaluation into a dictionary."""
+        """Serializes presentation decision into a dictionary."""
         return {
             "action": self.action,
             "reason": self.reason,
@@ -152,6 +163,8 @@ class PolicyEvaluationResult:
                 "urgency": self.urgency,
                 "actionability": self.actionability,
                 "relevance": self.relevance,
+                "personal_significance": self.personal_significance,
+                "evidence_quality": self.evidence_quality,
                 "evidence_strength": self.evidence_strength,
                 "user_context": self.user_context,
                 "situation_freshness": self.situation_freshness,
@@ -160,4 +173,9 @@ class PolicyEvaluationResult:
             },
             "timestamp": format_iso8601(self.timestamp),
         }
+
+
+# Canonical backward-compatible alias
+PolicyEvaluationResult = PresentationDecision
+
 

@@ -346,4 +346,7 @@ class PatternStore:
         finally:
             conn.close()
 
+    get_all_patterns = list_patterns
+    add_pattern = create_pattern
+
 

@@ -1,23 +1,41 @@
 """
-Personal World Model implementation for the personal_intelligence Hermes plugin.
+Personal World Model implementation for the Personal Intelligence system.
 
-Derived strictly from verified observations and structured reasoning episodes.
-Maintains:
-1. CURRENT STATE (commitments, upcoming events, open issues, recent important activity, known goals, active situations)
-2. TIMELINE (chronological personal observations)
-3. GOALS (contextual intentions and objectives)
-4. OPEN SITUATIONS (active tension frames)
-5. KNOWN PATTERNS (empirically supported regularities)
-6. EMERGING HYPOTHESES (candidate patterns under evaluation)
+TARGET ARCHITECTURAL MODEL:
 
-Uses SQLite. Does NOT use a graph database.
-All state changes pass through validated structured operations with complete provenance.
+PERSONAL WORLD MODEL
+    ├── Entities
+    ├── State
+    ├── Timeline
+    ├── Goals
+    ├── Commitments
+    ├── Situations
+    ├── Observations
+    └── Context Graph
+
+CONTEXT GRAPH
+    ├── relationships
+    ├── temporal links
+    ├── evidence links
+    ├── relevance links
+    └── contextual traversal
+
+ARCHITECTURAL DISTINCTION:
+Personal World Model answers:
+    "What do we currently know about this person's world?"
+Context Graph answers:
+    "How are the relevant things in that world connected?"
+
+Context Graph is the relational connective substrate backed by SQLite.
+PersonalWorldModel is the higher-level semantic representation and semantic owner.
+Context Graph is NOT a second memory store, NOT a graph database,
+and NOT a separate semantic knowledge engine.
 """
 
 from datetime import datetime, timedelta, timezone
 import json
 import logging
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 import uuid
 
 from personal_intelligence.core.episodes.models import (
@@ -51,17 +69,28 @@ from personal_intelligence.core.state.engine import StateEngine
 from personal_intelligence.core.state.entity_store import EntityState
 from personal_intelligence.core.timeline.engine import TimelineEngine
 
-from personal_intelligence.core.world.graph import EntityGraphStore, EntityNode, EntityEdge
+from personal_intelligence.core.world.graph import (
+    BoundedContextGraph,
+    CanonicalEntityType,
+    CanonicalRelationship,
+    ContextGraph,
+    EntityEdge,
+    EntityGraphStore,
+    EntityNode,
+)
 from personal_intelligence.core.world.simulator import WorldModelSimulator, SimulationResult
-from personal_intelligence.core.world.predictive import PredictiveProcessingEngine, ExpectedState
+from personal_intelligence.core.world.expectations import ExpectationProvider
 from personal_intelligence.core.world.person_model import PersonModelEngine, PersonEntity
-from personal_intelligence.core.patterns.compaction import HippocampalCompactor, CompactionSummary
-from personal_intelligence.core.world.mcts_simulator import MCTSWorldSimulator, MCTSTreeResult
+from personal_intelligence.core.memory.maintenance import MemoryMaintenanceJob, MemoryMaintenanceSummary
+
 
 from personal_intelligence.core.world.models import (
     Commitment,
     CommitmentStatus,
     CurrentState,
+    EpistemicIntegrityError,
+    EpistemicRecord,
+    EpistemicType,
     FactProvenance,
     ImportantActivity,
     IssueSeverity,
@@ -87,6 +116,7 @@ class PersonalWorldModel:
         self,
         db_manager: Optional[DatabaseManager] = None,
         local_store: Optional[LocalStateStore] = None,
+        expectation_provider: Optional[ExpectationProvider] = None,
     ) -> None:
         self.db_manager = db_manager or DatabaseManager()
         self.local_store = local_store or LocalStateStore(db_manager=self.db_manager)
@@ -98,8 +128,9 @@ class PersonalWorldModel:
         self.pattern_store = self.local_store.pattern_store
         self.episode_store = self.local_store.episode_store
 
-        self.graph_store = EntityGraphStore(db_manager=self.db_manager)
-        self.relationship_store = self.graph_store  # TemporalEntityRelationshipModel
+        self.context_graph = ContextGraph(db_manager=self.db_manager)
+        self.graph_store = self.context_graph
+        self.relationship_store = self.context_graph  # TemporalEntityRelationshipModel
         self.timeline_engine = TimelineEngine(event_store=self.event_store)
         self.goal_engine = GoalEngine(
             goal_store=self.goal_store,
@@ -117,11 +148,17 @@ class PersonalWorldModel:
         from personal_intelligence.core.significance import PersonalSignificanceEngine
         self.significance_engine = PersonalSignificanceEngine()
 
-        # Deferred/Experimental Research Engines (Retained for backward compatibility)
-        self.predictive_engine = PredictiveProcessingEngine(db_manager=self.db_manager)
+        # Optional Expectation Provider Extension (Plug-in hook)
+        self.expectation_provider = expectation_provider
+
+        # Deferred/Experimental Research Engines (Retained for research prototypes)
         self.person_model_engine = PersonModelEngine(db_manager=self.db_manager)
-        self.hippocampal_compactor = HippocampalCompactor(db_manager=self.db_manager)
-        self.mcts_simulator = MCTSWorldSimulator()
+        self.memory_maintenance_job = MemoryMaintenanceJob(
+            db_manager=self.db_manager,
+            local_store=self.local_store,
+            pattern_store=self.pattern_store,
+            situation_store=self.situation_store,
+        )
         self.simulator = WorldModelSimulator(goal_engine=self.goal_engine)
 
 
@@ -131,39 +168,56 @@ class PersonalWorldModel:
 
     def record_observation(
         self,
-        source: str,
-        source_id: str,
-        timestamp: Union[datetime, str],
-        observation_type: str,
-        summary: str,
+        source: Union[str, Event],
+        source_id: Optional[str] = None,
+        timestamp: Optional[Union[datetime, str]] = None,
+        observation_type: Optional[str] = None,
+        summary: Optional[str] = None,
         evidence: Optional[Union[Dict[str, Any], List[Any], str]] = None,
         provenance: Optional[Dict[str, Any]] = None,
         subject_id: Optional[str] = "user",
         confidence: float = 1.0,
+        source_type: Optional[str] = None,
+        observed_at: Optional[Union[datetime, str]] = None,
+        entity_refs: Optional[List[str]] = None,
+        schema_version: str = "1.0",
     ) -> Event:
         """
         Ingests a normalized observation with provenance into event_log and automatically
         derives relevant structured state updates (commitments, upcoming events, activity).
+        Accepts either an Event instance or individual observation attributes.
         """
+        if isinstance(source, Event):
+            event = source
+            self.event_store.append(event)
+            self._derive_state_from_observation(event)
+            return event
+
         event = core_record_obs(
             source=source,
-            source_id=source_id,
-            timestamp=timestamp,
-            observation_type=observation_type,
-            summary=summary,
+            source_id=source_id or f"obs-{uuid.uuid4().hex[:8]}",
+            timestamp=timestamp or datetime.now(timezone.utc),
+            observation_type=observation_type or "general",
+            summary=summary or "Observation",
             evidence=evidence,
             provenance=provenance,
             subject_id=subject_id,
             confidence=confidence,
+            source_type=source_type,
+            observed_at=observed_at,
+            entity_refs=entity_refs,
+            schema_version=schema_version,
             event_store=self.event_store,
         )
 
-        # Automatically derive structured entities when observation represents a commitment or issue
+        # Automatically derive structured entities and sync into context graph
         self._derive_state_from_observation(event)
         return event
 
     def _derive_state_from_observation(self, event: Event) -> None:
         """Derives structured commitments, issues, or activities from normalized observation."""
+        # 0. Sync observation node and linked entities into Context Graph
+        self.context_graph.sync_from_observation(event)
         evidence = event.payload.get("evidence", {}) if isinstance(event.payload, dict) else {}
         summary = event.payload.get("summary", "") if isinstance(event.payload, dict) else ""
         norm_type = event.event_type.lower()
@@ -364,24 +418,28 @@ class PersonalWorldModel:
 
     def create_goal(
         self,
-        name: str,
+        name: Optional[str] = None,
         description: str = "",
         priority: str = GoalPriority.MEDIUM.value,
         status: str = GoalStatus.ACTIVE.value,
         goal_id: Optional[str] = None,
+        title: Optional[str] = None,
     ) -> Goal:
-        """Stores a contextual goal via GoalStore."""
-        return self.goal_store.create_goal(
-            name=name,
+        """Stores a contextual goal via GoalStore and syncs into ContextGraph."""
+        effective_name = name or title or "Untitled Goal"
+        goal = self.goal_store.create_goal(
+            name=effective_name,
             description=description,
             priority=priority,
             status=status,
             goal_id=goal_id,
         )
+        self.context_graph.sync_from_goal(goal)
+        return goal
 
     def create_situation(
         self,
-        type: str,
+        type: Optional[str] = None,
         priority: str = SituationPriority.MEDIUM.value,
         novelty: float = 0.0,
         context: Optional[Dict[str, Any]] = None,
@@ -389,17 +447,123 @@ class PersonalWorldModel:
         related_goals: Optional[List[str]] = None,
         expires_at: Optional[datetime] = None,
         situation_id: Optional[str] = None,
+        situation_type: Optional[str] = None,
+        summary: Optional[str] = None,
     ) -> Situation:
-        """Stores an assessed situation via SituationStore."""
-        return self.situation_store.create(
-            type=type,
+        """Stores an assessed situation via SituationStore and syncs into ContextGraph."""
+        effective_type = type or situation_type or "general"
+        ctx = dict(context or {})
+        if summary and "summary" not in ctx:
+            ctx["summary"] = summary
+        situation = self.situation_store.create(
+            type=effective_type,
             priority=priority,
             novelty=novelty,
-            context=context,
+            context=ctx,
             evidence=evidence,
             related_goals=related_goals,
             expires_at=expires_at,
             situation_id=situation_id,
+        )
+        self.context_graph.sync_from_situation(situation)
+        return situation
+
+    def get_bounded_context(
+        self,
+        target_id: str,
+        depth: int = 1,
+        time_window: Optional[Tuple[datetime, datetime]] = None,
+        relevance_constraints: Optional[Dict[str, Any]] = None,
+        include_inferred: bool = True,
+    ) -> BoundedContextGraph:
+        """
+        Retrieves a bounded subgraph around an entity, situation, goal, or observation.
+        Does NOT dump the entire World Model or graph.
+        """
+        return self.context_graph.get_bounded_context(
+            target_id=target_id,
+            depth=depth,
+            time_window=time_window,
+            relevance_constraints=relevance_constraints,
+            include_inferred=include_inferred,
+        )
+
+    def get_context(
+        self,
+        target_id: str,
+        depth: int = 1,
+        time_window: Optional[Tuple[datetime, datetime]] = None,
+        relevance_constraints: Optional[Dict[str, Any]] = None,
+        include_inferred: bool = True,
+    ) -> BoundedContextGraph:
+        """Alias for get_bounded_context."""
+        return self.context_graph.get_context(
+            target_id=target_id,
+            depth=depth,
+            time_window=time_window,
+            relevance_constraints=relevance_constraints,
+            include_inferred=include_inferred,
+        )
+
+    def get_related_entities(
+        self,
+        entity_id: str,
+        relationship: Optional[Union[CanonicalRelationship, str]] = None,
+        depth: int = 1,
+        active_only: bool = True,
+    ) -> List[EntityNode]:
+        """Discovers related entities via the Context Graph."""
+        return self.context_graph.get_related_entities(
+            entity_id=entity_id,
+            relationship=relationship,
+            depth=depth,
+            active_only=active_only,
+        )
+
+    def get_neighbors(
+        self,
+        node_id: str,
+        depth: int = 1,
+        include_ended: bool = False,
+    ) -> List[Tuple[EntityNode, str, EntityNode]]:
+        """Discovers direct graph neighbors via the Context Graph."""
+        return self.context_graph.get_neighbors(
+            node_id=node_id,
+            depth=depth,
+            include_ended=include_ended,
+        )
+
+    def get_related_goals(self, target_id: str, depth: int = 2) -> List[Dict[str, Any]]:
+        """Discovers connected goals via the Context Graph."""
+        return self.context_graph.get_related_goals(target_id=target_id, depth=depth)
+
+    def get_related_situations(self, entity_id: str, depth: int = 2) -> List[Dict[str, Any]]:
+        """Discovers connected situations via the Context Graph."""
+        return self.context_graph.get_related_situations(entity_id=entity_id, depth=depth)
+
+    def get_supporting_evidence(self, target_id: str) -> List[Dict[str, Any]]:
+        """Discovers supporting observations and evidence for a situation or entity."""
+        return self.context_graph.get_supporting_evidence(target_id=target_id)
+
+    def get_temporal_context(
+        self, entity_id: str, as_of: Optional[datetime] = None
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Categorizes entity context into current, historical, stale, and future."""
+        return self.context_graph.get_temporal_context(entity_id=entity_id, as_of=as_of)
+
+    def find_relevant_context(
+        self,
+        situation_id: Optional[str] = None,
+        entity_id: Optional[str] = None,
+        goal_id: Optional[str] = None,
+        limit: int = 20,
+    ) -> Dict[str, Any]:
+        """Answers 'What is relevant to this situation?' via the Context Graph."""
+        return self.context_graph.find_relevant_context(
+            situation_id=situation_id,
+            entity_id=entity_id,
+            goal_id=goal_id,
+            limit=limit,
         )
 
     def record_reasoning_episode(self, episode: ReasoningEpisode) -> ReasoningEpisode:
@@ -817,6 +981,22 @@ class PersonalWorldModel:
         """Returns open and monitoring situations from SituationStore."""
         return [s.to_dict() for s in self.situation_store.list_active(limit=50)]
 
+    def get_situations(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Returns situations from SituationStore.
+        If status is None or 'active', returns all active situations.
+        """
+        if status is None or status == "active":
+            return self.get_open_situations()
+        return [s.to_dict() for s in self.situation_store.list_all(status=status)]
+
+    def get_current_world(self, reference_time: Optional[datetime] = None) -> PersonalWorldModelSnapshot:
+        """
+        Answers: 'What do we currently know about this person's world?'
+        Returns the authoritative semantic snapshot of the person's world.
+        """
+        return self.get_snapshot(reference_time=reference_time)
+
     def get_known_patterns(self) -> List[Dict[str, Any]]:
         """Returns patterns with active empirical support from PatternStore."""
         patterns = self.pattern_store.list_patterns()
@@ -824,6 +1004,28 @@ class PersonalWorldModel:
             p.to_dict() for p in patterns
             if p.status in {PatternStatus.ACTIVE.value, PatternStatus.SUPPORTED.value, "ACTIVE", "SUPPORTED"}
         ]
+
+    def get_commitments(self, status: Optional[str] = None) -> List[Commitment]:
+        """Returns commitments stored in entity_store."""
+        entities = self.entity_store.list(entity_type="commitment")
+        commits = [Commitment.from_dict(e.state) for e in entities if isinstance(e.state, dict)]
+        if status:
+            stat_clean = status.strip().lower()
+            commits = [c for c in commits if str(c.status).lower() == stat_clean]
+        return commits
+
+    def get_open_issues(self, status: Optional[str] = None) -> List[OpenIssue]:
+        """Returns open issues stored in entity_store."""
+        entities = self.entity_store.list(entity_type="open_issue")
+        issues = [OpenIssue.from_dict(e.state) for e in entities if isinstance(e.state, dict)]
+        if status:
+            stat_clean = status.strip().lower()
+            issues = [i for i in issues if str(i.status).lower() == stat_clean]
+        return issues
+
+    def get_upcoming_events(self, as_of: Optional[datetime] = None) -> List[UpcomingEvent]:
+        """Returns upcoming events derived from timeline and commitments."""
+        return []
 
     def get_emerging_hypotheses(self) -> List[Dict[str, Any]]:
         """Returns candidate patterns in hypothesis or observed stage from PatternStore."""
@@ -860,13 +1062,226 @@ class PersonalWorldModel:
             timestamp=now,
         )
 
+    def snapshot(self, as_of: Optional[datetime] = None) -> PersonalWorldModelSnapshot:
+        """Alias for get_snapshot."""
+        return self.get_snapshot(reference_time=as_of)
+
     def to_dict(self) -> Dict[str, Any]:
         """Serializes current unified world model snapshot to JSON-serializable dict."""
         return self.get_snapshot().to_dict()
 
     # -------------------------------------------------------------------------
-    # Next-Gen World Model Enhancements (Graph, Probabilistic, Simulation, Lineage)
     # -------------------------------------------------------------------------
+    # Explicit Epistemic State Management (OBSERVED, DERIVED, INFERRED, PREDICTED, RECOMMENDED)
+    # -------------------------------------------------------------------------
+
+    def record_epistemic_record(self, record: EpistemicRecord) -> EpistemicRecord:
+        """
+        Durably persists an explicit epistemic state record in SQLite with full provenance.
+        Ensures inferences explicitly retain their supporting observation lineage.
+        """
+        if record.epistemic_type in (EpistemicType.INFERRED.value, EpistemicType.PREDICTED.value) and not record.supporting_observation_ids:
+            logger.warning(
+                f"Epistemic record '{record.id}' of type '{record.epistemic_type}' registered without supporting observation IDs."
+            )
+
+        conn = self.db_manager.get_connection()
+        try:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO epistemic_records (
+                        id, epistemic_type, statement, subject, predicate, object,
+                        source, source_id, origin_event_id,
+                        supporting_observation_ids_json, contradictory_observation_ids_json,
+                        status, provenance_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        epistemic_type = excluded.epistemic_type,
+                        statement = excluded.statement,
+                        status = excluded.status,
+                        supporting_observation_ids_json = excluded.supporting_observation_ids_json,
+                        contradictory_observation_ids_json = excluded.contradictory_observation_ids_json,
+                        provenance_json = excluded.provenance_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        record.id,
+                        record.epistemic_type,
+                        record.statement,
+                        record.subject,
+                        record.predicate,
+                        record.object,
+                        record.source,
+                        record.source_id,
+                        record.origin_event_id,
+                        json.dumps(record.supporting_observation_ids),
+                        json.dumps(record.contradictory_observation_ids),
+                        record.status,
+                        json.dumps(record.provenance),
+                        format_iso8601(record.created_at),
+                        format_iso8601(record.updated_at),
+                    ),
+                )
+            return record
+        finally:
+            conn.close()
+
+    def record_epistemic_fact(
+        self,
+        subject: str,
+        predicate: str,
+        object: str,
+        epistemic_type: Union[str, EpistemicType] = "observed",
+        statement: str = "",
+        source: str = "unknown",
+        source_id: Optional[str] = None,
+        origin_event_id: Optional[str] = None,
+        supporting_observation_ids: Optional[List[str]] = None,
+        contradictory_observation_ids: Optional[List[str]] = None,
+        provenance: Optional[Dict[str, Any]] = None,
+    ) -> EpistemicRecord:
+        """
+        Records or updates an explicit epistemic fact (triple) with verified ground-truth lineage.
+        """
+        type_str = epistemic_type.value if isinstance(epistemic_type, EpistemicType) else str(epistemic_type).lower()
+        supp_ids = list(supporting_observation_ids or [])
+        contra_ids = list(contradictory_observation_ids or [])
+
+        # Strict Epistemic Safeguards (Observation vs Inference vs Prediction)
+        if type_str == EpistemicType.OBSERVED.value:
+            has_prov = bool(
+                source_id
+                or origin_event_id
+                or provenance
+                or supp_ids
+                or contra_ids
+                or (source and source != "unknown")
+            )
+            if not has_prov:
+                raise EpistemicIntegrityError(
+                    "Observations require verified ground-truth provenance coordinates (source_id, origin_event_id, or provenance metadata)."
+                )
+        elif type_str in (EpistemicType.INFERRED.value, EpistemicType.PREDICTED.value):
+            if not supp_ids and not origin_event_id:
+                raise EpistemicIntegrityError(
+                    f"Epistemic '{type_str}' records must retain supporting observation IDs/evidence. Got empty supporting_observation_ids."
+                )
+
+        conn = self.db_manager.get_connection()
+        try:
+            with conn:
+                row = conn.execute(
+                    "SELECT * FROM epistemic_records WHERE subject=? AND predicate=? AND object=? AND epistemic_type=? AND status='active'",
+                    (subject, predicate, object, type_str),
+                ).fetchone()
+
+                if row:
+                    record = EpistemicRecord.from_dict(dict(row))
+                    for obs_id in supp_ids:
+                        if obs_id not in record.supporting_observation_ids:
+                            record.supporting_observation_ids.append(obs_id)
+                    for obs_id in contra_ids:
+                        if obs_id not in record.contradictory_observation_ids:
+                            record.contradictory_observation_ids.append(obs_id)
+                    record.updated_at = datetime.now(timezone.utc)
+                    if provenance:
+                        record.provenance.update(provenance)
+                else:
+                    record = EpistemicRecord(
+                        epistemic_type=type_str,
+                        statement=statement or f"{subject} {predicate} {object}",
+                        subject=subject,
+                        predicate=predicate,
+                        object=object,
+                        source=source,
+                        source_id=source_id,
+                        origin_event_id=origin_event_id,
+                        supporting_observation_ids=supp_ids,
+                        contradictory_observation_ids=contra_ids,
+                        provenance=provenance or {},
+                    )
+
+                conn.execute(
+                    """
+                    INSERT INTO epistemic_records (
+                        id, epistemic_type, statement, subject, predicate, object,
+                        source, source_id, origin_event_id,
+                        supporting_observation_ids_json, contradictory_observation_ids_json,
+                        status, provenance_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        epistemic_type = excluded.epistemic_type,
+                        statement = excluded.statement,
+                        status = excluded.status,
+                        supporting_observation_ids_json = excluded.supporting_observation_ids_json,
+                        contradictory_observation_ids_json = excluded.contradictory_observation_ids_json,
+                        provenance_json = excluded.provenance_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        record.id,
+                        record.epistemic_type,
+                        record.statement,
+                        record.subject,
+                        record.predicate,
+                        record.object,
+                        record.source,
+                        record.source_id,
+                        record.origin_event_id,
+                        json.dumps(record.supporting_observation_ids),
+                        json.dumps(record.contradictory_observation_ids),
+                        record.status,
+                        json.dumps(record.provenance),
+                        format_iso8601(record.created_at),
+                        format_iso8601(record.updated_at),
+                    ),
+                )
+
+            # Synchronize relational representation to Context Graph without creating a second store
+            try:
+                if subject and object and predicate:
+                    self.context_graph.connect(
+                        source_id=subject,
+                        target_id=object,
+                        relationship=predicate,
+                        epistemic_type=type_str,
+                        metadata={
+                            "supporting_observation_ids": supp_ids,
+                            "contradictory_observation_ids": contra_ids,
+                            "statement": record.statement,
+                        },
+                        provenance=provenance,
+                    )
+            except Exception as e:
+                logger.debug(f"ContextGraph synchronization skipped for epistemic fact: {e}")
+
+            return record
+        finally:
+            conn.close()
+
+    def get_epistemic_records(
+        self,
+        epistemic_type: Optional[str] = None,
+        status: str = "active",
+        subject: Optional[str] = None,
+    ) -> List[EpistemicRecord]:
+        """Queries epistemic records by type, status, and subject."""
+        conn = self.db_manager.get_connection()
+        try:
+            query = "SELECT * FROM epistemic_records WHERE status = ?"
+            params: List[Any] = [status]
+            if epistemic_type:
+                query += " AND epistemic_type = ?"
+                params.append(str(epistemic_type).lower())
+            if subject:
+                query += " AND subject = ?"
+                params.append(subject)
+
+            rows = conn.execute(query, tuple(params)).fetchall()
+            return [EpistemicRecord.from_dict(dict(r)) for r in rows]
+        finally:
+            conn.close()
 
     def record_probabilistic_fact(
         self,
@@ -878,8 +1293,22 @@ class PersonalWorldModel:
         provenance: Optional[Dict[str, Any]] = None,
     ) -> ProbabilisticFact:
         """
-        Ingests or reinforces a probabilistic fact using Bayesian update rules.
+        Backward-compatible adapter for recording facts into epistemic and legacy tables.
         """
+        # Record into primary V1 epistemic_records table
+        self.record_epistemic_fact(
+            subject=subject,
+            predicate=predicate,
+            object=object,
+            epistemic_type="observed",
+            source=provenance.get("source", "unknown") if provenance else "unknown",
+            source_id=provenance.get("source_id") if provenance else None,
+            origin_event_id=evidence_id,
+            supporting_observation_ids=[evidence_id] if evidence_id else [],
+            provenance=provenance or {},
+        )
+
+        # Mirror in legacy probabilistic_facts table for backward compatibility
         conn = self.db_manager.get_connection()
         try:
             with conn:
@@ -890,7 +1319,6 @@ class PersonalWorldModel:
 
                 if row:
                     fact = ProbabilisticFact.from_dict(dict(row))
-                    fact.reinforce_evidence(initial_confidence)
                     if evidence_id and evidence_id not in fact.evidence_ids:
                         fact.evidence_ids.append(evidence_id)
                 else:
@@ -936,20 +1364,35 @@ class PersonalWorldModel:
     def retract_observation(self, observation_id: str) -> List[str]:
         """
         Performs cascading truth retraction across the provenance graph when an observation is invalidated.
-        Returns list of retracted entity/commitment IDs.
+        Retracts derived/inferred epistemic records and legacy fact records linked to observation_id.
         """
         retracted_ids: List[str] = [observation_id]
         conn = self.db_manager.get_connection()
         try:
             with conn:
-                # Mark observation/event as retracted or confidence=0
+                # 1. Mark observation/event as retracted (confidence = 0.0)
                 conn.execute(
                     "UPDATE event_log SET confidence = 0.0 WHERE id = ? OR source_id = ?",
                     (observation_id, observation_id),
                 )
-                # Retract probabilistic facts linked to this evidence ID
-                rows = conn.execute("SELECT * FROM probabilistic_facts WHERE status='active'").fetchall()
+
+                # 2. Retract epistemic records referencing this observation ID
+                rows = conn.execute("SELECT * FROM epistemic_records WHERE status='active'").fetchall()
                 for r in rows:
+                    d = dict(r)
+                    supp_ids = json.loads(d.get("supporting_observation_ids_json", "[]"))
+                    origin_id = d.get("origin_event_id")
+                    if observation_id == origin_id or observation_id in supp_ids:
+                        rec_id = d["id"]
+                        conn.execute(
+                            "UPDATE epistemic_records SET status='retracted', updated_at=? WHERE id=?",
+                            (format_iso8601(datetime.now(timezone.utc)), rec_id),
+                        )
+                        retracted_ids.append(rec_id)
+
+                # 3. Retract legacy probabilistic facts if present
+                p_rows = conn.execute("SELECT * FROM probabilistic_facts WHERE status='active'").fetchall()
+                for r in p_rows:
                     d = dict(r)
                     ev_ids = json.loads(d.get("evidence_ids_json", "[]"))
                     if observation_id in ev_ids:
@@ -958,7 +1401,9 @@ class PersonalWorldModel:
                             "UPDATE probabilistic_facts SET status='retracted', belief_score=0.0 WHERE id=?",
                             (fact_id,),
                         )
-                        retracted_ids.append(fact_id)
+                        if fact_id not in retracted_ids:
+                            retracted_ids.append(fact_id)
+
             return retracted_ids
         finally:
             conn.close()
@@ -980,8 +1425,7 @@ class PersonalWorldModel:
 
     def apply_memory_salience_decay(self, elapsed_days: float = 1.0) -> int:
         """
-        Applies Ebbinghaus memory decay to all stored probabilistic facts.
-        Returns count of decayed facts.
+        Applies decay to stored facts for backward compatibility.
         """
         conn = self.db_manager.get_connection()
         try:
@@ -1000,23 +1444,25 @@ class PersonalWorldModel:
         finally:
             conn.close()
 
-    def evaluate_prediction_error(self, actual_event: Event) -> float:
-        """Computes top-down prediction error delta for incoming observation."""
-        return self.predictive_engine.calculate_prediction_error(actual_event)
+
 
     def evaluate_person_urgency(self, sender_name: str, message_summary: str = "") -> float:
         """Computes Theory of Mind interpersonal urgency multiplier for sender."""
         return self.person_model_engine.evaluate_interpersonal_urgency(sender_name, message_summary)
 
-    def run_mcts_tree_search(self, situation_id: str, scenario_title: str) -> MCTSTreeResult:
-        """Executes multi-step Monte Carlo Tree Search and Pareto utility evaluation."""
-        base_snapshot = self.get_snapshot()
-        return self.mcts_simulator.evaluate_decision_tree(
-            situation_id=situation_id,
-            scenario_title=scenario_title,
-            base_snapshot=base_snapshot,
+    def run_memory_maintenance(
+        self,
+        retention_days: Optional[int] = None,
+        salience_decay_days: float = 1.0,
+        situation_stale_hours: float = 72.0,
+        pattern_decay_days: float = 30.0,
+        optimize_db: bool = True,
+    ) -> MemoryMaintenanceSummary:
+        """Executes deterministic memory maintenance & consolidation."""
+        return self.memory_maintenance_job.run_maintenance(
+            retention_days=retention_days,
+            salience_decay_days=salience_decay_days,
+            situation_stale_hours=situation_stale_hours,
+            pattern_decay_days=pattern_decay_days,
+            optimize_db=optimize_db,
         )
-
-    def compact_memory_schema(self, hours_back: int = 24) -> CompactionSummary:
-        """Runs hippocampal memory compaction over recent event logs."""
-        return self.hippocampal_compactor.compact_memory(hours_back=hours_back)

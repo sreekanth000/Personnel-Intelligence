@@ -59,7 +59,7 @@ def main():
         print("=" * 85)
 
         if report.failed_count == 0:
-            print("\n>>> ALL 23 BENCHMARK EVALUATIONS PASSED WITH 100% SUCCESS RATE <<<\n")
+            print("\n>>> ALL 23 BENCHMARK EVALUATIONS PASSED UNDER TEST SCENARIOS <<<\n")
         else:
             print(f"\n>>> WARNING: {report.failed_count} EVALUATIONS FAILED <<<\n")
             sys.exit(1)

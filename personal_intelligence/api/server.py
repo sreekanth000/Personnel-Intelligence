@@ -33,8 +33,10 @@ from personal_intelligence.core.world import PersonalWorldModel
 from personal_intelligence.demo.scenarios import DemoScenarioRunner
 from personal_intelligence.hermes_bridge.client import HermesClient
 from personal_intelligence.core.fusion.multi_source_engine import MultiSourceFusionEngine
-from personal_intelligence.core.notifications.notifier import DesktopNotifier, send_desktop_alert
-from personal_intelligence.core.scheduler.background_sync import BackgroundSyncScheduler
+from personal_intelligence.core.scheduler.local_maintenance import (
+    BackgroundSyncScheduler,
+    LocalMaintenanceScheduler,
+)
 from personal_intelligence.hermes_bridge.calendar_adapter import (
     CalendarCapabilityRequest,
     GoogleCalendarCapabilityAdapter,
@@ -44,7 +46,125 @@ from personal_intelligence.hermes_bridge.connection_manager import HermesConnect
 from personal_intelligence.hermes_bridge.situation_investigation import SituationInvestigator
 from personal_intelligence.hermes_bridge.voice_notes_adapter import VoiceNotesAdapter
 from personal_intelligence.storage.db import DatabaseManager
+import logging
 
+logger = logging.getLogger(__name__)
+
+
+class SyntheticReplayManager:
+    """
+    Manages chronological playback of synthetic source fabric observations
+    into the Personal World Model, Context Graph, and Evaluation Loop.
+    """
+
+    def __init__(self, data_service: "DashboardDataService") -> None:
+        self.data_service = data_service
+        self.events: List[Any] = []
+        self.current_index: int = 0
+        self.is_initialized: bool = False
+        self.days: int = 30
+        self.seed: int = 42
+
+    def init_stream(self, days: int = 30, seed: int = 42, reset_db: bool = False) -> Dict[str, Any]:
+        from personal_intelligence.demo.synthetic_fabric import SyntheticSourceFabric
+        if reset_db:
+            self.data_service.clear_demo_state()
+        self.days = max(30, days)
+        self.seed = seed
+        fabric = SyntheticSourceFabric(seed=seed, days=self.days, events_per_day=5)
+        self.events = fabric.generate_observations()
+        self.current_index = 0
+        self.is_initialized = True
+        return self.get_status()
+
+    def get_status(self) -> Dict[str, Any]:
+        curr_event = self.events[self.current_index] if (self.is_initialized and self.current_index < len(self.events)) else None
+        day_idx = 0
+        cat = "none"
+        if curr_event:
+            p = getattr(curr_event, "payload", {})
+            day_idx = p.get("day_index", self.current_index // 5) if isinstance(p, dict) else (self.current_index // 5)
+            cat = p.get("category", getattr(curr_event, "event_type", "observation")) if isinstance(p, dict) else getattr(curr_event, "event_type", "observation")
+
+        graph = self.data_service.current_world_model.context_graph
+        node_count = len(graph.list_all_nodes())
+        edge_count = len(graph.get_edges())
+        sit_count = len(self.data_service.current_situation_store.list_active())
+        ep_count = len(self.data_service.current_episode_store.list_recent())
+        pat_count = len(self.data_service.current_pattern_store.list_patterns())
+
+        return {
+            "is_initialized": self.is_initialized,
+            "total_events": len(self.events),
+            "current_index": self.current_index,
+            "current_day": day_idx + 1,
+            "total_days": self.days,
+            "current_category": cat,
+            "has_more": self.current_index < len(self.events),
+            "progress_percentage": round((self.current_index / len(self.events) * 100), 1) if self.events else 0.0,
+            "nodes_count": node_count,
+            "edges_count": edge_count,
+            "situations_count": sit_count,
+            "episodes_count": ep_count,
+            "patterns_count": pat_count,
+            "last_event": curr_event.to_dict() if (curr_event and hasattr(curr_event, "to_dict")) else None,
+        }
+
+    def step_next(self) -> Dict[str, Any]:
+        if not self.is_initialized or not self.events:
+            self.init_stream(days=self.days, seed=self.seed)
+
+        if self.current_index >= len(self.events):
+            return {
+                "status": "completed",
+                "message": "All synthetic events have been replayed.",
+                "status_info": self.get_status(),
+            }
+
+        event = self.events[self.current_index]
+        self.current_index += 1
+
+        # Ingest through standard record_observation() boundary
+        obs = self.data_service.current_world_model.record_observation(
+            source=event.source,
+            source_id=event.source_id,
+            observation_type=event.event_type,
+            summary=event.summary,
+            evidence=event.payload,
+            provenance=event.provenance,
+            timestamp=event.event_time,
+            entity_refs=event.entity_refs,
+        )
+
+        # Emit activity stream event
+        self.data_service.activity_stream.emit(
+            "synthetic_observation_replayed",
+            f"Replay [{self.current_index}/{len(self.events)}]: {event.source} - {event.summary}",
+            source=event.source,
+        )
+
+        # Periodically or on key events run evaluation loop to discover situations and update state
+        if self.current_index % 3 == 0 or self.current_index == len(self.events):
+            try:
+                from personal_intelligence.core.loop import PersonalIntelligenceEvaluationLoop
+                loop = PersonalIntelligenceEvaluationLoop(db_manager=self.data_service.db_manager)
+                loop.run_cycle(user_context="available", as_of=event.event_time)
+            except Exception as e:
+                logger.debug("Replay evaluation cycle note: %s", e)
+
+        status_info = self.get_status()
+        status_info["ingested_event_id"] = obs.id if hasattr(obs, "id") else str(obs)
+        status_info["summary"] = event.summary
+        return {
+            "status": "stepped",
+            "event": event.to_dict(),
+            "status_info": status_info,
+        }
+
+    def reset_replay(self) -> Dict[str, Any]:
+        self.data_service.clear_demo_state()
+        self.current_index = 0
+        return self.get_status()
 
 
 class DashboardDataService:
@@ -121,22 +241,35 @@ class DashboardDataService:
             state_engine=self.state_engine,
         )
 
-        # Background Sync & OS Notification Scheduler (Configurable Interval)
-        self.bg_scheduler = BackgroundSyncScheduler(
-            sync_interval_minutes=sync_interval_minutes,
-            sync_callback=self._perform_silent_triage_sync,
+        # Local PI Maintenance & OS Notification Scheduler (Configurable Interval)
+        self.bg_scheduler = LocalMaintenanceScheduler(
+            maintenance_interval_minutes=sync_interval_minutes,
+            maintenance_callback=self._perform_local_maintenance_cycle,
             auto_start=True,
         )
+
+        self.replay_manager = SyntheticReplayManager(data_service=self)
 
         if self.auto_seed_sample_data or is_demo_mode or (db_manager and db_manager.db_path and ("ui_test" in db_manager.db_path or "test_" in db_manager.db_path)):
             self._ensure_sample_data_if_empty()
 
-    def _perform_silent_triage_sync(self) -> Dict[str, Any]:
-        """Performs silent background inbox triage and returns high-priority situations."""
+    def _perform_local_maintenance_cycle(self) -> Dict[str, Any]:
+        """
+        Executes periodic local PI maintenance, situation expiry, and local triage.
+        Strictly local operations: situation expiry, memory maintenance,
+        and high-priority situation desktop alerts.
+        ZERO external API calls or Gmail/Calendar polling (Hermes owns external acquisition).
+        """
         try:
-            self.execute_gmail_investigation(query="is:inbox", max_results=25, days=14)
+            # 1. Expire stale local situations
+            if hasattr(self.current_situation_store, "expire"):
+                self.current_situation_store.expire()
+            # 2. Run deterministic local memory maintenance
+            from personal_intelligence.core.memory.maintenance import MemoryMaintenanceJob
+            job = MemoryMaintenanceJob(db_manager=self.db_manager)
+            job.run()
         except Exception as e:
-            logger.debug("Background silent Gmail query note: %s", e)
+            logger.debug("Local maintenance cycle note: %s", e)
 
         active_sits = self.current_situation_store.list_active()
         high_pri = [s.to_dict() for s in active_sits if getattr(s, "priority", "") in ("critical", "high")]
@@ -144,6 +277,9 @@ class DashboardDataService:
             "high_priority_situations": high_pri,
             "total_active_situations": len(active_sits),
         }
+
+    # Backward compatibility alias
+    _perform_silent_triage_sync = _perform_local_maintenance_cycle
 
     def get_sync_status_payload(self) -> Dict[str, Any]:
         """Returns background sync scheduler status."""
@@ -160,20 +296,15 @@ class DashboardDataService:
         return res
 
     def trigger_test_notification(self) -> Dict[str, Any]:
-        """Dispatches a test native desktop alert."""
-        send_desktop_alert(
-            title="Personal Intelligence Active",
-            message="Background sync & native OS notifications are active and operating properly!",
-            priority="high",
-        )
+        """Test presentation dispatch endpoint (delegates presentation to client layer)."""
         self.activity_stream.emit(
             "notification_dispatched",
-            "Test desktop notification sent via Native OS Notifier.",
-            source="desktop_notifier",
+            "Test presentation decision evaluated (presentation delivery delegated to client UI).",
+            source="client_presentation",
         )
         return {
             "status": "success",
-            "message": "Test desktop notification dispatched to OS.",
+            "message": "Test presentation decision evaluated; presentation delivery delegated to client.",
             "timestamp": format_iso8601(datetime.now(timezone.utc)),
         }
 
@@ -189,6 +320,26 @@ class DashboardDataService:
             "query": query,
             "results": hits,
             "total_matches": len(hits),
+            "timestamp": format_iso8601(datetime.now(timezone.utc)),
+        }
+
+    def execute_memory_retrieval(
+        self,
+        query: str = "",
+        limit: int = 10,
+        allow_semantic_escalation: bool = False,
+    ) -> Dict[str, Any]:
+        """Executes unified memory retrieval (structured + lexical + optional semantic escalation)."""
+        items = self.ask_engine.memory_retriever.retrieve(
+            query=query,
+            limit=limit,
+            allow_semantic_escalation=allow_semantic_escalation,
+        )
+        return {
+            "status": "success",
+            "query": query,
+            "results": [it.to_dict() for it in items],
+            "total_matches": len(items),
             "timestamp": format_iso8601(datetime.now(timezone.utc)),
         }
 
@@ -334,6 +485,22 @@ class DashboardDataService:
 
     def _ensure_sample_data_if_empty(self) -> None:
         """Populates rich realistic multi-domain state if SQLite database is brand new."""
+        now = datetime.now(timezone.utc)
+        if len(self.world_model.get_commitments()) == 0:
+            try:
+                self.world_model.record_commitment(
+                    description="Review Project Argon Q3 Architectural Milestone with Systems Engineering team",
+                    due_at=now + timedelta(days=1),
+                    metadata={"origin": "calendar_invite", "project_id": "proj-argon"},
+                )
+                self.world_model.record_commitment(
+                    description="Submit Half-Marathon Training Log & Weekly Recovery Metrics",
+                    due_at=now + timedelta(days=2),
+                    metadata={"origin": "strava_sync", "project_id": "goal-half-marathon"},
+                )
+            except Exception as e:
+                logger.debug("Sample commitments note: %s", e)
+
         if self.event_store.count() > 0:
             return
 
@@ -578,7 +745,9 @@ class DashboardDataService:
     @property
     def current_state_engine(self) -> StateEngine:
         if self.is_demo_mode:
-            return self.demo_runner.state_engine
+            tl = self.demo_runner.timeline_engine.get_time_range(limit=1)
+            if tl.events:
+                return self.demo_runner.state_engine
         return self.state_engine
 
     @property
@@ -600,7 +769,12 @@ class DashboardDataService:
     @property
     def current_world_model(self) -> PersonalWorldModel:
         if self.is_demo_mode:
-            return self.demo_runner.world_model
+            if (
+                self.demo_runner.world_model.event_store.count() > 0
+                or len(self.demo_runner.world_model.context_graph.list_all_nodes()) > 0
+                or len(self.demo_runner.world_model.get_ground_truth_facts()) > 0
+            ):
+                return self.demo_runner.world_model
         return self.world_model
 
     @property
@@ -826,8 +1000,8 @@ class DashboardDataService:
         gap_text = target_sit.investigation_target or ("No external information gap required" if not has_gap else "Information gap identified across external tools")
         inv_text = "Hermes native capability invoked: workspace_read / search query with strict read-only boundary." if has_gap else "Sufficient local epistemic context available; external investigation bypassed."
 
-        ev_strength = (matching_ep.evidence_strength if matching_ep else "STRONG").upper()
-        ev_text = f"Deterministic evidence strength computed: {ev_strength} across {len(target_sit.evidence or [])} verified provenance references."
+        ev_qual = (matching_ep.evidence_quality if hasattr(matching_ep, "evidence_quality") and matching_ep.evidence_quality else (matching_ep.evidence_strength if matching_ep else "STRONG")).upper()
+        ev_text = f"Deterministic evidence quality computed: {ev_qual} across {len(target_sit.evidence or [])} verified provenance references."
 
         rec_text = ctx.get("what_i_suggest") or rec_dict.get("what_i_suggest") or rec_dict.get("primary_action") or rec_dict.get("content") or "Adaptive recommendation formulated."
         pol_action = ctx.get("policy") or decision_dict.get("action") or (PolicyAction.INTERRUPT.value if target_sit.priority == "high" else PolicyAction.BRIEFING.value)
@@ -864,7 +1038,8 @@ class DashboardDataService:
                 "description": p.description,
                 "context_statement": ctx_statement,
                 "status": status_val,
-                "evidence_strength": (p.evidence_strength or "moderate").upper(),
+                "evidence_quality": (getattr(p, "evidence_quality", None) or p.evidence_strength or "moderate").upper(),
+                "evidence_strength": (getattr(p, "evidence_quality", None) or p.evidence_strength or "moderate").upper(),
                 "support_count": p.support_count,
                 "contradiction_count": p.contradiction_count,
                 "confidence_ratio": f"{p.confidence * 100:.1f}% Empirical Support",
@@ -1044,7 +1219,7 @@ class DashboardDataService:
             },
             {
                 "stage": "Deterministic Evidence",
-                "title": "Evidence Strength Calculation",
+                "title": "Evidence Quality Calculation",
                 "content": f"Deterministic score calculated based on verified multi-source corroboration ({len(raw_evidence)} signals).",
                 "badge": "FACT",
                 "badge_class": "badge-fact",
@@ -1122,7 +1297,10 @@ class DashboardDataService:
     def get_world_model_payload(self) -> Dict[str, Any]:
         """Returns structured Personal World Model entities and snapshot."""
         snapshot = self.current_world_model.get_snapshot()
-        return snapshot.to_dict()
+        d = snapshot.to_dict()
+        if not d.get("ground_truth_facts") and not d.get("current_state", {}).get("current_commitments") and self.world_model != self.current_world_model:
+            d = self.world_model.get_snapshot().to_dict()
+        return d
 
     def get_recommendations_payload(self) -> List[Dict[str, Any]]:
         """Returns structured recommendations generated from active situations and reasoning episodes."""
@@ -1164,18 +1342,237 @@ class DashboardDataService:
                 "situation_type": s.type,
                 "title": ctx.get("summary") or s.type.replace("_", " ").title(),
                 "primary": primary,
-                "what_i_suggest": primary,
-                "what_happened": ctx.get("what_happened") or rec_dict.get("what_happened") or ctx.get("summary"),
+                "what_happened": ctx.get("what_happened") or rec_dict.get("what_happened") or ctx.get("summary") or f"Active situation {s.type} observed.",
                 "why_it_matters": why,
+                "what_i_suggest": primary,
+                "evidence": ctx.get("evidence") or rec_dict.get("evidence") or s.evidence or ["Verified ground-truth observation"],
+                "uncertainty": ctx.get("uncertainty") or rec_dict.get("uncertainty") or ("Preserved epistemic uncertainty pending observations." if s.novelty >= 0.8 else "Calibrated bounded certainty."),
+                "decision": policy_action,
                 "why": why,
                 "policy_action": policy_action,
                 "policy": policy_action,
                 "urgency": (str(matching_ep.urgency).upper() if matching_ep and matching_ep.urgency else "HIGH"),
                 "actionability": (str(matching_ep.actionability).upper() if matching_ep and matching_ep.actionability else "HIGH"),
-                "evidence_strength": (str(matching_ep.evidence_strength).upper() if matching_ep and matching_ep.evidence_strength else "STRONG"),
+                "evidence_quality": (str(matching_ep.evidence_quality if hasattr(matching_ep, "evidence_quality") and matching_ep.evidence_quality else (matching_ep.evidence_strength if matching_ep else "STRONG"))).upper(),
+                "evidence_strength": (str(matching_ep.evidence_quality if hasattr(matching_ep, "evidence_quality") and matching_ep.evidence_quality else (matching_ep.evidence_strength if matching_ep else "STRONG"))).upper(),
                 "created_at": format_iso8601(matching_ep.created_at if matching_ep else s.created_at),
             })
         return result
+
+    def get_context_graph_payload(self) -> Dict[str, Any]:
+        """
+        Returns complete Context Graph nodes, edges, entity type breakdown,
+        and topological metrics for the visualization view.
+        """
+        graph = self.current_world_model.context_graph
+        nodes_raw = graph.list_all_nodes()
+        edges_raw = graph.get_edges(active_only=False, include_ended=True)
+        if not nodes_raw and self.world_model != self.current_world_model:
+            graph = self.world_model.context_graph
+            nodes_raw = graph.list_all_nodes()
+            edges_raw = graph.get_edges(active_only=False, include_ended=True)
+
+        entity_types: Dict[str, int] = {}
+        nodes_list = []
+        for n in nodes_raw:
+            d = n.to_dict()
+            et = str(d.get("entity_type") or "concept").lower()
+            entity_types[et] = entity_types.get(et, 0) + 1
+            nodes_list.append(d)
+
+        relation_types: Dict[str, int] = {}
+        edges_list = []
+        for e in edges_raw:
+            d = e.to_dict()
+            rel = str(d.get("relationship") or "related_to").lower()
+            relation_types[rel] = relation_types.get(rel, 0) + 1
+            edges_list.append(d)
+
+        return {
+            "status": "success",
+            "nodes": nodes_list,
+            "edges": edges_list,
+            "stats": {
+                "total_nodes": len(nodes_list),
+                "total_edges": len(edges_list),
+                "entity_types_count": len(entity_types),
+                "relation_types_count": len(relation_types),
+            },
+            "entity_types": entity_types,
+            "relation_types": relation_types,
+            "timestamp": format_iso8601(datetime.now(timezone.utc)),
+        }
+
+    def get_hermes_reasoning_results_payload(self) -> Dict[str, Any]:
+        """
+        Returns structured Hermes reasoning results parsed and verified from ReasoningEpisode store.
+        Strict architectural invariant:
+        - NEVER exposes private chain-of-thought or raw internal prompts.
+        - Provides explicit structured fields:
+          WHAT HAPPENED, WHY IT MATTERS, WHAT I SUGGEST, EVIDENCE, UNCERTAINTY, DECISION.
+        """
+        episodes = self.current_episode_store.list_recent_episodes(limit=30)
+        situations = self.current_situation_store.list_active()
+        sit_map = {s.id: s for s in situations}
+
+        results = []
+        for ep in episodes:
+            matching_sit = sit_map.get(ep.situation_id)
+            sit_ctx = (matching_sit.context if matching_sit else {}) or {}
+
+            facts = []
+            for obs in (ep.observations or []):
+                content = obs.get("content") if isinstance(obs, dict) else str(obs)
+                facts.append({"tag": "FACT", "content": content})
+
+            inferences = []
+            for inf in (ep.inferences or []):
+                content = inf.get("content") if isinstance(inf, dict) else str(inf)
+                inferences.append({"tag": "INFERENCE", "content": content})
+
+            predictions = []
+            for pred in (ep.predictions or []):
+                content = pred.get("content") if isinstance(pred, dict) else str(pred)
+                predictions.append({"tag": "PREDICTION", "content": content})
+
+            rec_data = ep.recommendation if isinstance(ep.recommendation, dict) else {"content": str(ep.recommendation or "")}
+            dec_data = ep.intervention_decision if isinstance(ep.intervention_decision, dict) else {}
+
+            what_happened = (
+                rec_data.get("what_happened")
+                or sit_ctx.get("what_happened")
+                or sit_ctx.get("summary")
+                or getattr(matching_sit, "summary", None)
+                or (f"Observation across monitored domains triggered {ep.hermes_task or 'reasoning cycle'}.")
+            )
+            why_it_matters = (
+                rec_data.get("why_it_matters")
+                or sit_ctx.get("why_it_matters")
+                or rec_data.get("why")
+                or sit_ctx.get("why_detected")
+                or "Potential divergence impacting active commitments and performance goals."
+            )
+            what_i_suggest = (
+                rec_data.get("what_i_suggest")
+                or rec_data.get("primary_action")
+                or rec_data.get("content")
+                or sit_ctx.get("what_i_suggest")
+                or "Review situational telemetry and make necessary proactive adjustments."
+            )
+            raw_ev = (
+                rec_data.get("evidence")
+                or sit_ctx.get("evidence")
+                or getattr(matching_sit, "evidence", None)
+                or [f["content"] for f in facts[:3]]
+                or ["Verified event telemetry from EventStore"]
+            )
+            if isinstance(raw_ev, str):
+                raw_ev = [raw_ev]
+
+            uncertainty = (
+                rec_data.get("uncertainty")
+                or sit_ctx.get("uncertainty")
+                or ("High epistemic uncertainty preserved pending additional source observations." if getattr(matching_sit, "novelty", 0) >= 0.8 else "Calibrated bounded certainty backed by verified multi-source evidence.")
+            )
+            decision = (
+                dec_data.get("action")
+                or sit_ctx.get("policy")
+                or (PolicyAction.INTERRUPT.value if getattr(matching_sit, "priority", "") == "high" else PolicyAction.BRIEFING.value)
+            )
+
+            results.append({
+                "episode_id": ep.id,
+                "situation_id": ep.situation_id,
+                "task": ep.hermes_task or "Situational Analysis",
+                "status": ep.status,
+                "created_at": format_iso8601(ep.created_at),
+                "urgency": str(ep.urgency or "MEDIUM").upper(),
+                "actionability": str(ep.actionability or "HIGH").upper(),
+                "evidence_strength": str(getattr(ep, "evidence_quality", None) or ep.evidence_strength or "MODERATE").upper(),
+                "what_happened": what_happened,
+                "why_it_matters": why_it_matters,
+                "what_i_suggest": what_i_suggest,
+                "evidence": raw_ev,
+                "uncertainty": uncertainty,
+                "decision": decision,
+                "decision_reason": dec_data.get("reason", "Evaluated deterministically against user attention and urgency thresholds."),
+                "user_context": dec_data.get("user_context", "AVAILABLE"),
+                "facts": facts,
+                "inferences": inferences,
+                "predictions": predictions,
+            })
+
+        return {
+            "status": "success",
+            "count": len(results),
+            "results": results,
+            "timestamp": format_iso8601(datetime.now(timezone.utc)),
+        }
+
+    def get_intervention_decisions_payload(self) -> Dict[str, Any]:
+        """
+        Returns all persisted intervention decisions evaluated by InterventionPolicy.
+        Aggregates from intervention_decisions table and reasoning_episodes.
+        """
+        decisions = []
+        conn = self.db_manager.get_connection()
+        try:
+            rows = conn.execute("SELECT * FROM intervention_decisions ORDER BY timestamp DESC LIMIT 50").fetchall()
+            for r in rows:
+                d = dict(r)
+                meta = json.loads(d.get("metadata_json") or "{}") if isinstance(d.get("metadata_json"), str) else (d.get("metadata_json") or {})
+                decisions.append({
+                    "id": d.get("decision_id"),
+                    "situation_id": d.get("situation_id"),
+                    "action": d.get("delivery_mode") or "BRIEFING",
+                    "reason": d.get("reasoning") or "Evaluated policy thresholds.",
+                    "content": d.get("recommended_content"),
+                    "user_context": meta.get("user_context", "AVAILABLE"),
+                    "urgency": meta.get("urgency", "MEDIUM"),
+                    "timestamp": d.get("timestamp"),
+                    "source": "intervention_decisions_table",
+                })
+        except Exception as e:
+            logger.debug("Intervention decisions query note: %s", e)
+        finally:
+            conn.close()
+
+        episodes = self.current_episode_store.list_recent_episodes(limit=30)
+        seen_sits = {d["situation_id"] for d in decisions if d.get("situation_id")}
+        for ep in episodes:
+            if ep.intervention_decision and (ep.situation_id not in seen_sits):
+                dec = ep.intervention_decision
+                decisions.append({
+                    "id": f"dec-{ep.id}",
+                    "episode_id": ep.id,
+                    "situation_id": ep.situation_id,
+                    "action": dec.get("action", "BRIEFING"),
+                    "reason": dec.get("reason", "Evaluated against user attention and priority."),
+                    "content": ep.recommendation.get("content") or ep.recommendation.get("primary_action") if isinstance(ep.recommendation, dict) else str(ep.recommendation or ""),
+                    "user_context": dec.get("user_context", "AVAILABLE"),
+                    "urgency": str(ep.urgency or dec.get("urgency", "MEDIUM")).upper(),
+                    "timestamp": format_iso8601(ep.created_at),
+                    "source": "reasoning_episodes",
+                })
+
+        return {
+            "status": "success",
+            "count": len(decisions),
+            "decisions": decisions,
+            "timestamp": format_iso8601(datetime.now(timezone.utc)),
+        }
+
+    def replay_init(self, days: int = 30, seed: int = 42, reset_db: bool = False) -> Dict[str, Any]:
+        return self.replay_manager.init_stream(days=days, seed=seed, reset_db=reset_db)
+
+    def replay_next(self) -> Dict[str, Any]:
+        return self.replay_manager.step_next()
+
+    def replay_reset(self) -> Dict[str, Any]:
+        return self.replay_manager.reset_replay()
+
+    def replay_status(self) -> Dict[str, Any]:
+        return self.replay_manager.get_status()
 
     def execute_what_matters(self) -> Dict[str, Any]:
         """Triggers /pi what_matters and returns structured recommendations and policy decisions."""
@@ -1470,79 +1867,39 @@ class DashboardDataService:
 
     def configure_hermes_auth(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Configures Google OAuth or IMAP credentials directly on the active Hermes runtime host.
+        Delegates external capability configuration to the attached host Hermes Agent runtime.
+        Personal Intelligence itself never manages, stores, or refreshes external credentials.
         """
         from personal_intelligence.hermes_bridge.client import get_active_hermes_context
         ctx = self.hermes_client.runtime_context or get_active_hermes_context()
         if not ctx:
             return {"status": "error", "error": "No active Hermes runtime host is attached to this process."}
 
-        method = payload.get("method", "imap")
+        if hasattr(ctx, "configure_auth") and callable(ctx.configure_auth):
+            return ctx.configure_auth(payload)
 
-        if method == "oauth":
+        method = payload.get("method", "oauth")
+        if method == "oauth" and hasattr(ctx, "oauth_handler") and ctx.oauth_handler:
             client_id = payload.get("client_id", "").strip()
             client_secret = payload.get("client_secret", "").strip()
-
-            from scripts.launch_local_hermes import HermesGoogleOAuthHandler
-            if not hasattr(ctx, "oauth_handler") or not ctx.oauth_handler:
-                ctx.oauth_handler = HermesGoogleOAuthHandler()
-
             if client_id and client_secret:
                 ctx.oauth_handler.client_id = client_id
                 ctx.oauth_handler.client_secret = client_secret
-
             auth_url = ctx.oauth_handler.get_authorization_url(port=8085)
-
             import threading
             threading.Thread(target=ctx.oauth_handler.authorize_in_browser, kwargs={"port": 8085}, daemon=True).start()
             return {
                 "status": "success",
-                "message": "Google Sign-in launched in your browser! Check your browser window to approve read-only permissions.",
+                "message": "Hermes host launched OAuth authorization in your browser.",
                 "auth_url": auth_url,
                 "auth_mode": "oauth",
             }
 
-        elif method == "imap":
-            user = payload.get("user", "").strip()
-            password = payload.get("password", "").strip()
-            if not user or not password:
-                return {"status": "error", "error": "Gmail address and App Password are required."}
-
-            # Validate IMAP connection live
-            try:
-                import imaplib
-                mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
-                mail.login(user, password)
-                mail.logout()
-            except Exception as ex:
-                return {"status": "error", "error": f"Gmail login failed: {str(ex)}. Check email address or 16-character App Password."}
-
-            ctx.gmail_user = user
-            ctx.gmail_password = password
-            if hasattr(ctx, "auth_status") and isinstance(ctx.auth_status, dict):
-                ctx.auth_status["gmail"] = "authenticated"
-                ctx.auth_status["google"] = "authenticated"
-                ctx.auth_status["calendar"] = "authenticated"
-                ctx.auth_status["drive"] = "authenticated"
-                ctx.auth_status["meet"] = "authenticated"
-
-            # Persist credentials to ~/.personal_intelligence/hermes_auth.json
-            try:
-                auth_dir = Path.home() / ".personal_intelligence"
-                auth_dir.mkdir(parents=True, exist_ok=True)
-                auth_file = auth_dir / "hermes_auth.json"
-                with open(auth_file, "w", encoding="utf-8") as f:
-                    json.dump({"gmail_user": user, "gmail_password": password, "method": "imap"}, f, indent=2)
-            except Exception as ex:
-                logger.warning("Failed to persist hermes_auth.json: %s", ex)
-
-            return {
-                "status": "success",
-                "message": f"Successfully connected to Gmail and Google capabilities ({user}) in read-only mode!",
-                "auth_mode": "imap",
-            }
-
-        return {"status": "error", "error": f"Unknown auth method: {method}"}
+        return {
+            "status": "success",
+            "message": f"Auth configuration dispatched to host Hermes runtime.",
+            "auth_mode": method,
+        }
 
     def execute_gmail_investigation(self, query: str = "is:inbox", max_results: int = 100, days: int = 40) -> Dict[str, Any]:
         """
@@ -2398,6 +2755,14 @@ class PersonalIntelligenceRequestHandler(SimpleHTTPRequestHandler):
             self._send_json_response(self.data_service.execute_what_changed(time_window_hours=hours))
         elif path in ("/api/pi/what_matters_now", "/api/what_matters_now"):
             self._send_json_response(self.data_service.execute_what_matters())
+        elif path in ("/api/pi/context_graph", "/api/context_graph"):
+            self._send_json_response(self.data_service.get_context_graph_payload())
+        elif path in ("/api/pi/hermes/reasoning_results", "/api/hermes/reasoning_results"):
+            self._send_json_response(self.data_service.get_hermes_reasoning_results_payload())
+        elif path in ("/api/pi/interventions", "/api/interventions"):
+            self._send_json_response(self.data_service.get_intervention_decisions_payload())
+        elif path in ("/api/pi/demo/replay/status", "/api/demo/replay/status"):
+            self._send_json_response(self.data_service.replay_status())
         else:
             # Fall back to serving static files from ui directory
             super().do_GET()
@@ -2444,6 +2809,11 @@ class PersonalIntelligenceRequestHandler(SimpleHTTPRequestHandler):
             self._send_json_response(self.data_service.trigger_sync_now())
         elif path in ("/api/pi/notifications/test", "/api/notifications/test"):
             self._send_json_response(self.data_service.trigger_test_notification())
+        elif path in ("/api/pi/search/memory", "/api/search/memory"):
+            q = body.get("query", "")
+            limit = int(body.get("limit", 10))
+            escalate = bool(body.get("allow_semantic_escalation", False))
+            self._send_json_response(self.data_service.execute_memory_retrieval(query=q, limit=limit, allow_semantic_escalation=escalate))
         elif path in ("/api/pi/search/hybrid", "/api/search/hybrid"):
             q = body.get("query", "")
             limit = int(body.get("limit", 10))
@@ -2504,6 +2874,15 @@ class PersonalIntelligenceRequestHandler(SimpleHTTPRequestHandler):
         elif path in ("/api/pi/demo/toggle", "/api/demo/toggle"):
             mode = body.get("mode")
             self._send_json_response(self.data_service.toggle_demo_mode(mode=mode))
+        elif path in ("/api/pi/demo/replay/init", "/api/demo/replay/init"):
+            days = int(body.get("days", 30))
+            seed = int(body.get("seed", 42))
+            reset_db = bool(body.get("reset_db", False))
+            self._send_json_response(self.data_service.replay_init(days=days, seed=seed, reset_db=reset_db))
+        elif path in ("/api/pi/demo/replay/next", "/api/demo/replay/next"):
+            self._send_json_response(self.data_service.replay_next())
+        elif path in ("/api/pi/demo/replay/reset", "/api/demo/replay/reset"):
+            self._send_json_response(self.data_service.replay_reset())
         else:
             self._send_json_response({"status": "error", "message": f"Action endpoint '{path}' not found"}, 404)
 

@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Union
 import uuid
 
 from personal_intelligence.core.events.models import ensure_timezone_aware, format_iso8601
+from personal_intelligence.core.world.graph import validate_and_normalize_entity_type
 from personal_intelligence.storage.db import DatabaseManager
 
 
@@ -23,6 +24,10 @@ class EntityState:
     last_updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     source_event_ids: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.entity_type = validate_and_normalize_entity_type(self.entity_type)
+        self.last_updated_at = ensure_timezone_aware(self.last_updated_at, "last_updated_at")
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -117,6 +122,20 @@ class EntityStateStore:
             if row:
                 return self._row_to_entity(row)
             return None
+        finally:
+            conn.close()
+
+    def list(self, entity_type: Optional[str] = None, limit: int = 100) -> List[EntityState]:
+        """Lists entity states, optionally filtered by entity_type."""
+        if entity_type:
+            return self.list_by_type(entity_type, limit=limit)
+        query = "SELECT * FROM entity_state ORDER BY last_updated_at DESC LIMIT ?;"
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(query, (limit,))
+            rows = cursor.fetchall()
+            return [self._row_to_entity(r) for r in rows]
         finally:
             conn.close()
 

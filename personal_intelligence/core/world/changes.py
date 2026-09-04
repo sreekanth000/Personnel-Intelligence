@@ -100,6 +100,19 @@ class WhatChangedAnalyzer:
         self.state_engine = state_engine or StateEngine(timeline_engine=self.timeline_engine, goal_store=self.goal_store)
         self.db_manager = db_manager
 
+    def analyze_changes(
+        self,
+        as_of: Optional[datetime] = None,
+        window_hours: int = 24,
+        max_changes: int = 5,
+    ) -> List[MeaningfulChange]:
+        """Alias for analyze_meaningful_changes."""
+        return self.analyze_meaningful_changes(
+            time_window_hours=window_hours,
+            reference_time=as_of,
+            max_changes=max_changes,
+        )
+
     def analyze_meaningful_changes(
         self,
         time_window_hours: int = 48,

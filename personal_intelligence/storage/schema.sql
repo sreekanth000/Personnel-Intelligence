@@ -274,9 +274,34 @@ CREATE INDEX IF NOT EXISTS idx_entity_edges_target ON entity_edges(target_id);
 CREATE INDEX IF NOT EXISTS idx_entity_edges_rel ON entity_edges(relationship);
 CREATE INDEX IF NOT EXISTS idx_entity_edges_status ON entity_edges(status);
 
--- V1_DEFERRED: Probabilistic facts with Bayesian belief scores — deferred to post-V1.
+-- V1 Explicit Epistemic State Records (OBSERVED, DERIVED, INFERRED, PREDICTED, RECOMMENDED)
+CREATE TABLE IF NOT EXISTS epistemic_records (
+    id TEXT PRIMARY KEY,
+    epistemic_type TEXT NOT NULL, -- 'observed', 'derived', 'inferred', 'predicted', 'recommended'
+    statement TEXT NOT NULL DEFAULT '',
+    subject TEXT NOT NULL DEFAULT '',
+    predicate TEXT NOT NULL DEFAULT '',
+    object TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT 'unknown',
+    source_id TEXT,
+    origin_event_id TEXT,
+    supporting_observation_ids_json TEXT NOT NULL DEFAULT '[]',
+    contradictory_observation_ids_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'active', -- 'active', 'retracted', 'superseded'
+    provenance_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_epistemic_type ON epistemic_records(epistemic_type);
+CREATE INDEX IF NOT EXISTS idx_epistemic_triple ON epistemic_records(subject, predicate, object);
+CREATE INDEX IF NOT EXISTS idx_epistemic_status ON epistemic_records(status);
+CREATE INDEX IF NOT EXISTS idx_epistemic_origin ON epistemic_records(origin_event_id);
+
+-- V1_DEFERRED: Legacy probabilistic facts table — deferred from V1.
 -- Retained for schema compatibility. Not actively used in V1 deterministic reasoning.
 CREATE TABLE IF NOT EXISTS probabilistic_facts (
+
     id TEXT PRIMARY KEY,
     subject TEXT NOT NULL,
     predicate TEXT NOT NULL,

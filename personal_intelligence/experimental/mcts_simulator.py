@@ -1,5 +1,6 @@
 """
 Multi-Step Causal Monte Carlo Tree Search (MCTS) Simulator for Personal Intelligence.
+[EXPERIMENTAL / FUTURE RESEARCH - DEFERRED FROM V1]
 
 Simulates multi-branch decision trees for complex situational conflicts and scores options
 using Pareto multi-objective utility across Health, Career, Sleep, and Time budgets:

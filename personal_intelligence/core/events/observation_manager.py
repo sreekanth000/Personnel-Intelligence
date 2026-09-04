@@ -121,22 +121,23 @@ class ObservationManager:
 
         # 3. Domain classification and relevance detection
 
-        # A. Gmail / Communication
-        if any(k in t_name for k in ["gmail", "email", "mail", "message"]):
+        # A. Messaging & Communication (WhatsApp, Slack, Telegram, Gmail, Chat)
+        if any(k in t_name for k in ["whatsapp", "slack", "telegram", "gmail", "email", "mail", "message", "chat"]):
             # Check if it has actual message content or search hits
             res_str = str(result).lower()
+            src = "whatsapp" if "whatsapp" in t_name else ("slack" if "slack" in t_name else ("telegram" if "telegram" in t_name else ("gmail" if "gmail" in t_name else "communication")))
             if any(sig in res_str for sig in ["subject", "from", "deadline", "milestone", "review", "approved", "attached", "meeting", "invite"]):
-                return True, "gmail", "possible_commitment"
-            return True, "gmail", "email_received"
+                return True, src, "possible_commitment"
+            return True, src, "email_received" if src == "gmail" else "message_received"
 
-        # B. Calendar / Schedule
+        # B. Calendar & Schedule
         if any(k in t_name for k in ["calendar", "event", "schedule", "meeting_schedule"]):
             res_str = str(result).lower()
             if any(sig in res_str for sig in ["conflict", "overlap", "reschedule", "cancelled", "urgent"]):
                 return True, "calendar", "conflicting_commitments"
             return True, "calendar", "upcoming_milestone"
 
-        # C. Drive / Documents
+        # C. Drive & Documents
         if any(k in t_name for k in ["drive", "doc", "sheet", "slide", "file_search"]):
             # Filter noise paths
             args_str = str(tool_args).lower()
@@ -144,14 +145,24 @@ class ObservationManager:
                 return False, None, None
             return True, "drive", "document_changed"
 
-        # D. Meet / Transcripts
+        # D. Meet & Transcripts
         if any(k in t_name for k in ["meet", "transcript", "meeting_note"]):
             res_str = str(result).lower()
             if any(sig in res_str for sig in ["decision", "action item", "next step", "agreed", "assigned"]):
                 return True, "meet", "meeting_decision"
             return True, "meet", "meeting_decision"
 
-        # E. Filesystem
+        # E. Health & Biometrics (Whoop, Hevy, HealthKit, Fitbit)
+        if any(k in t_name for k in ["whoop", "hevy", "health", "fitbit", "biometric", "workout", "sleep"]):
+            src = "whoop" if "whoop" in t_name else ("hevy" if "hevy" in t_name else "health")
+            return True, src, "activity_logged"
+
+        # F. Project & Task Tracking (Jira, Linear, GitHub, Asana)
+        if any(k in t_name for k in ["jira", "linear", "github", "asana", "issue", "task"]):
+            src = "linear" if "linear" in t_name else ("jira" if "jira" in t_name else ("github" if "github" in t_name else "task_tracker"))
+            return True, src, "task_updated"
+
+        # G. Filesystem
         if any(k in t_name for k in ["filesystem", "file", "workspace", "read_file", "write_file"]):
             args_str = str(tool_args).lower()
             # Discard transient or noise paths
@@ -161,6 +172,12 @@ class ObservationManager:
             if path_val.endswith((".lock", ".tmp", ".log", ".pyc", ".map")):
                 return False, None, None
             return True, "filesystem", "document_changed"
+
+        # H. Generic Connector / Custom Source
+        if isinstance(tool_args, dict) and "source" in tool_args:
+            custom_src = str(tool_args["source"]).lower().strip()
+            custom_type = str(tool_args.get("observation_type", "generic_observation")).lower().strip()
+            return True, custom_src, custom_type
 
         return False, None, None
 

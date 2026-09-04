@@ -1,5 +1,5 @@
 """
-Formal evaluation proving Personal Intelligence is not a collection of hard-coded domain agents.
+Architectural evaluation demonstrating that Personal Intelligence is domain-agnostic and not a collection of hard-coded domain agents.
 Tests an unseen, multi-stream synthetic scenario without any specialized detector:
 - Unusual location behavior (remote marine research station)
 - Changed calendar pattern (transatlantic async schedule)
@@ -51,9 +51,9 @@ from personal_intelligence.hermes_bridge.reasoning import (
 from personal_intelligence.storage.db import DatabaseManager
 
 
-class TestUnseenScenarioFormalEvaluation(unittest.TestCase):
+class TestUnseenScenarioEvaluation(unittest.TestCase):
     """
-    Formal evaluation suite proving domain-agnostic emergent reasoning on unfamiliar scenarios.
+    Architectural evaluation suite demonstrating domain-agnostic reasoning on unfamiliar scenarios.
     """
 
     def setUp(self) -> None:

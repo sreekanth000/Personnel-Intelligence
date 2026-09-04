@@ -242,6 +242,18 @@ class HermesRuntimeBridge:
         """
         start_time = datetime.now(timezone.utc)
 
+        # 0. Pre-LLM Boundary Hook Validation
+        from personal_intelligence.hermes_bridge.plugin.hooks import on_pre_llm_call
+        pre_check = on_pre_llm_call(prompt=request.prompt, session_id=request.session_id)
+        if pre_check.get("action") == "reject":
+            return HermesInvocationResponse(
+                raw_response="",
+                session_id=request.session_id,
+                success=False,
+                error=pre_check.get("reason", "Pre-LLM call hook rejected request due to boundary violations."),
+                safe_diagnostics={"invoker": "pre_llm_hook", "reason": pre_check.get("reason")},
+            )
+
         # 1. Direct LLM callable delegation (e.g. injected model or test hook)
         if self._llm_callable is not None:
             try:

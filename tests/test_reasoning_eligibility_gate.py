@@ -31,6 +31,9 @@ class TestReasoningEligibilityGate(unittest.TestCase):
         sig = SignificanceAssessment(level=SignificanceLevel.NOT_SIGNIFICANT.value)
         result = self.gate.evaluate(sit, sig, is_new_situation=False)
 
+        self.assertFalse(result.eligible)
+        self.assertEqual(result.cost_class, "none")
+        self.assertEqual(result.estimated_reasoning_value, "negligible")
         self.assertEqual(result.eligibility, ReasoningEligibility.NO_REASONING.value)
         self.assertFalse(result.budget.allow_hermes_call)
         self.assertEqual(result.budget.budget_level, ReasoningBudgetLevel.LOW.value)
@@ -46,6 +49,8 @@ class TestReasoningEligibilityGate(unittest.TestCase):
         sig = SignificanceAssessment(level=SignificanceLevel.HIGH.value)
         result = self.gate.evaluate(sit, sig)
 
+        self.assertFalse(result.eligible)
+        self.assertEqual(result.cost_class, "none")
         self.assertEqual(result.eligibility, ReasoningEligibility.NO_REASONING.value)
         self.assertFalse(result.budget.allow_hermes_call)
 
@@ -60,6 +65,9 @@ class TestReasoningEligibilityGate(unittest.TestCase):
         sig = SignificanceAssessment(level=SignificanceLevel.CRITICAL.value)
         result = self.gate.evaluate(sit, sig, is_new_situation=True)
 
+        self.assertTrue(result.eligible)
+        self.assertEqual(result.priority, "critical")
+        self.assertEqual(result.estimated_reasoning_value, "critical")
         self.assertEqual(result.eligibility, ReasoningEligibility.HERMES_REASONING.value)
         self.assertTrue(result.budget.allow_hermes_call)
         self.assertEqual(result.budget.budget_level, ReasoningBudgetLevel.CRITICAL.value)
@@ -77,6 +85,8 @@ class TestReasoningEligibilityGate(unittest.TestCase):
         sig = SignificanceAssessment(level=SignificanceLevel.HIGH.value)
         result = self.gate.evaluate(sit, sig, is_new_situation=True)
 
+        self.assertTrue(result.eligible)
+        self.assertEqual(result.cost_class, "deep_investigation")
         self.assertEqual(result.eligibility, ReasoningEligibility.HERMES_INVESTIGATION_AND_REASONING.value)
         self.assertTrue(result.requires_investigation)
         self.assertTrue(result.budget.allow_hermes_call)
@@ -95,6 +105,8 @@ class TestReasoningEligibilityGate(unittest.TestCase):
         sig = SignificanceAssessment(level=SignificanceLevel.MEDIUM.value)
         result = self.gate.evaluate(sit, sig, is_new_situation=True)
 
+        self.assertTrue(result.eligible)
+        self.assertEqual(result.cost_class, "standard")
         self.assertEqual(result.eligibility, ReasoningEligibility.HERMES_REASONING.value)
         self.assertEqual(result.budget.budget_level, ReasoningBudgetLevel.MEDIUM.value)
         self.assertEqual(result.budget.max_investigation_rounds, 0)
@@ -111,6 +123,9 @@ class TestReasoningEligibilityGate(unittest.TestCase):
         sig = SignificanceAssessment(level=SignificanceLevel.LOW.value)
         result = self.gate.evaluate(sit, sig, is_new_situation=False, has_new_events=True)
 
+        self.assertTrue(result.eligible)
+        self.assertEqual(result.cost_class, "local_only")
+        self.assertFalse(result.requires_hermes)
         self.assertEqual(result.eligibility, ReasoningEligibility.LOCAL_REASONING.value)
         self.assertFalse(result.budget.allow_hermes_call)
 

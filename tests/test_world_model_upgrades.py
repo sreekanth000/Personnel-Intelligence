@@ -66,31 +66,44 @@ class TestWorldModelUpgrades(unittest.TestCase):
         self.assertEqual(neighbors[0][1], "has_goal")
         self.assertEqual(neighbors[0][2].name, "Marathon Goal")
 
-    def test_probabilistic_fact_bayesian_reinforcement(self) -> None:
+    def test_epistemic_record_creation_and_provenance(self) -> None:
         wm = self.world_model
 
-        # Initial fact observation (confidence 0.6)
-        fact1 = wm.record_probabilistic_fact(
+        # 1. Record explicit OBSERVED fact with origin lineage
+        rec1 = wm.record_epistemic_fact(
             subject="User",
             predicate="has_preferred_meeting_time",
             object="Morning 09:00-11:00",
-            initial_confidence=0.6,
-            evidence_id="evt-obs-101",
+            epistemic_type="observed",
+            source="google_calendar",
+            source_id="cal-pref-1",
+            origin_event_id="evt-obs-101",
+            supporting_observation_ids=["evt-obs-101"],
+            provenance={"channel": "calendar", "verified": True},
         )
-        self.assertAlmostEqual(fact1.belief_score, 0.6, places=2)
+        self.assertEqual(rec1.epistemic_type, "observed")
+        self.assertEqual(rec1.status, "active")
+        self.assertIn("evt-obs-101", rec1.supporting_observation_ids)
 
-        # Reinforce with second supporting observation (confidence 0.7)
-        fact2 = wm.record_probabilistic_fact(
+        # 2. Reinforce with second supporting observation
+        rec2 = wm.record_epistemic_fact(
             subject="User",
             predicate="has_preferred_meeting_time",
             object="Morning 09:00-11:00",
-            initial_confidence=0.7,
-            evidence_id="evt-obs-102",
+            epistemic_type="observed",
+            source="gmail",
+            source_id="msg-pref-2",
+            origin_event_id="evt-obs-102",
+            supporting_observation_ids=["evt-obs-102"],
         )
-        # Bayesian update P(H|E) = 1 - (1 - 0.6)*(1 - 0.7) = 1 - 0.12 = 0.88
-        self.assertAlmostEqual(fact2.belief_score, 0.88, places=2)
-        self.assertIn("evt-obs-101", fact2.evidence_ids)
-        self.assertIn("evt-obs-102", fact2.evidence_ids)
+        self.assertIn("evt-obs-101", rec2.supporting_observation_ids)
+        self.assertIn("evt-obs-102", rec2.supporting_observation_ids)
+
+        # 3. Query epistemic records
+        records = wm.get_epistemic_records(epistemic_type="observed")
+        self.assertGreaterEqual(len(records), 1)
+        self.assertEqual(records[0].subject, "User")
+
 
     def test_counterfactual_scenario_simulation(self) -> None:
         wm = self.world_model

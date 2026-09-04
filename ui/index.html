@@ -18,20 +18,22 @@
         <div class="brand-badge">PI</div>
         <div>
           <h1 class="brand-title">Personal Intelligence</h1>
-          <p class="brand-subtitle">Epistemic Companion & Situation Engine</p>
+          <p class="brand-subtitle">Personal World Model & Situational Intelligence</p>
         </div>
       </div>
 
-      <!-- Main Navigation Tabs for the 7 Screens -->
+      <!-- Main Navigation Tabs for the 8 Core Views + Overview -->
       <nav class="nav-tabs" id="nav-tabs">
         <button class="nav-tab active" data-screen="overview" id="tab-overview">Overview</button>
-        <button class="nav-tab" data-screen="world-model" id="tab-world-model">World Model</button>
-        <button class="nav-tab" data-screen="situations" id="tab-situations">Situations</button>
-        <button class="nav-tab" data-screen="situation-detail" id="tab-situation-detail">Situation Detail</button>
-        <button class="nav-tab" data-screen="patterns" id="tab-patterns">Patterns</button>
-        <button class="nav-tab" data-screen="timeline" id="tab-timeline">Timeline</button>
-        <button class="nav-tab" data-screen="episodes" id="tab-episodes">Reasoning Episodes</button>
-        <button class="nav-tab" data-screen="sources" id="tab-sources">Data Sources</button>
+        <button class="nav-tab" data-screen="world-model" id="tab-world-model">1. World Model</button>
+        <button class="nav-tab" data-screen="context-graph" id="tab-context-graph">2. Context Graph</button>
+        <button class="nav-tab" data-screen="timeline" id="tab-timeline">3. Timeline</button>
+        <button class="nav-tab" data-screen="situations" id="tab-situations">4. Situations</button>
+        <button class="nav-tab" data-screen="hermes-reasoning" id="tab-hermes-reasoning">5. Hermes Reasoning</button>
+        <button class="nav-tab" data-screen="interventions" id="tab-interventions">6. Interventions</button>
+        <button class="nav-tab" data-screen="episodes" id="tab-episodes">7. Episodes</button>
+        <button class="nav-tab" data-screen="patterns" id="tab-patterns">8. Learned Patterns</button>
+        <button class="nav-tab" data-screen="sources" id="tab-sources">Sources</button>
       </nav>
 
       <div class="header-actions">
@@ -68,6 +70,51 @@
       <div id="stale-indicator" class="stale-badge hidden">⚠️ Stale Data (Syncing...)</div>
     </div>
   </div>
+
+  <!-- Live Replay & Next Event HUD Control Strip -->
+  <section class="replay-hud-section" id="replay-hud-section">
+    <div class="replay-hud-container">
+      <div class="replay-hud-left">
+        <div class="replay-live-pulse" id="replay-pulse-indicator"></div>
+        <div class="replay-title-group">
+          <span class="replay-badge">SYNTHETIC WORLD STREAM</span>
+          <span class="replay-label" id="replay-status-text">Chronological Replay Ready</span>
+        </div>
+      </div>
+
+      <div class="replay-hud-center">
+        <div class="replay-progress-info">
+          <span class="replay-day-chip" id="replay-day-chip">Day 1 / 30</span>
+          <span class="replay-event-chip" id="replay-event-chip">Event 0 / 150</span>
+          <span class="replay-cat-chip" id="replay-cat-chip">Domain: Ready</span>
+          <span class="replay-world-stats" id="replay-world-stats">Nodes: -- | Edges: --</span>
+        </div>
+        <div class="replay-progress-bar-bg">
+          <div class="replay-progress-bar-fill" id="replay-progress-fill" style="width: 0%;"></div>
+        </div>
+      </div>
+
+      <div class="replay-hud-controls">
+        <button id="btn-live-replay" class="btn btn-primary btn-sm replay-btn-toggle" title="Toggle automatic chronological replay">
+          <span class="btn-icon" id="live-replay-icon">▶</span> <span id="live-replay-text">Live Replay</span>
+        </button>
+        <button id="btn-next-event" class="btn btn-action btn-sm replay-btn-step" title="Ingest the next chronological synthetic observation">
+          <span class="btn-icon">⏭</span> Next Event
+        </button>
+        <div class="replay-speed-wrapper">
+          <label for="replay-speed-select" class="replay-speed-label">Speed:</label>
+          <select id="replay-speed-select" class="replay-speed-select">
+            <option value="1000">1x (1.0s)</option>
+            <option value="500">2x (0.5s)</option>
+            <option value="200">5x (0.2s)</option>
+          </select>
+        </div>
+        <button id="btn-reset-replay" class="btn btn-secondary btn-sm" title="Reset replay index and clear stream">
+          <span class="btn-icon">↺</span> Reset
+        </button>
+      </div>
+    </div>
+  </section>
 
   <!-- Demo Control Strip (Displayed when in Demo/Test Mode) -->
   <section class="demo-strip hidden" id="demo-control-strip">
@@ -113,14 +160,8 @@
         <button id="btn-action-what-changed" class="btn btn-action">
           <span class="btn-icon">🔄</span> /pi what_changed
         </button>
-        <button id="btn-action-test-sources" class="btn btn-action">
-          <span class="btn-icon">🔍</span> /pi test_sources
-        </button>
         <button id="btn-action-connect-hermes" class="btn btn-action">
           <span class="btn-icon">🔗</span> Connect Hermes
-        </button>
-        <button id="btn-action-investigate" class="btn btn-action">
-          <span class="btn-icon">🛠️</span> Investigate Gaps
         </button>
         <button id="btn-action-why" class="btn btn-action">
           <span class="btn-icon">🩺</span> /pi why (Diagnostic)
@@ -321,7 +362,7 @@
             <h3 class="card-title">Ground-Truth Verified Facts</h3>
           </div>
           <div style="display: flex; gap: 0.5rem; align-items: center;">
-            <span class="badge badge-fact">100% GROUND TRUTH</span>
+            <span class="badge badge-fact">GROUND TRUTH OBSERVATIONS</span>
             <span class="card-meta" id="wm-facts-count">0 facts</span>
           </div>
         </div>
@@ -384,6 +425,73 @@
     </div>
 
     <!-- =====================================================================
+         SCREEN 2: CONTEXT GRAPH
+         ===================================================================== -->
+    <div id="screen-context-graph" class="screen-view hidden">
+      <div class="screen-header">
+        <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; flex-wrap: wrap; gap: 1rem;">
+          <div>
+            <h2 class="screen-title">Context Graph Visualizer</h2>
+            <span class="screen-subtitle">Relational entity topology, temporal semantic links, and cross-domain dependencies</span>
+          </div>
+          <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <input type="text" id="graph-search-input" class="search-input" placeholder="Search entities (e.g. 'Project', 'Alice')..." style="padding: 0.4rem 0.75rem; background: rgba(0,0,0,0.3); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); color: #fff; font-size: 0.82rem;" />
+            <button id="btn-graph-reset-view" class="btn btn-secondary btn-sm">↺ Reset View</button>
+            <button id="btn-graph-refresh" class="btn btn-primary btn-sm">🔄 Refresh Graph</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Graph Filter Chips Bar -->
+      <div class="graph-toolbar">
+        <span style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">FILTER ENTITY:</span>
+        <div class="graph-filters" id="graph-entity-filters">
+          <button class="filter-btn active" data-type="all">All Types <span class="filter-count-badge" id="graph-total-count">0</span></button>
+          <button class="filter-btn" data-type="observation">Observation <span class="filter-count-badge" id="graph-count-observation">0</span></button>
+          <button class="filter-btn" data-type="concept">Concept <span class="filter-count-badge" id="graph-count-concept">0</span></button>
+          <button class="filter-btn" data-type="person">Person <span class="filter-count-badge" id="graph-count-person">0</span></button>
+          <button class="filter-btn" data-type="project">Project <span class="filter-count-badge" id="graph-count-project">0</span></button>
+          <button class="filter-btn" data-type="commitment">Commitment <span class="filter-count-badge" id="graph-count-commitment">0</span></button>
+          <button class="filter-btn" data-type="goal">Goal <span class="filter-count-badge" id="graph-count-goal">0</span></button>
+          <button class="filter-btn" data-type="activity">Activity <span class="filter-count-badge" id="graph-count-activity">0</span></button>
+          <button class="filter-btn" data-type="place">Place <span class="filter-count-badge" id="graph-count-place">0</span></button>
+        </div>
+      </div>
+
+      <!-- Graph Main Layout: Canvas + Side Inspector -->
+      <div class="graph-main-layout">
+        <div class="card graph-canvas-card">
+          <canvas id="context-graph-canvas" width="1000" height="600"></canvas>
+          <div class="graph-legend-overlay">
+            <span class="graph-legend-dot" style="background: #38bdf8;"></span> Observation
+            <span class="graph-legend-dot" style="background: #c084fc;"></span> Concept
+            <span class="graph-legend-dot" style="background: #f472b6;"></span> Person
+            <span class="graph-legend-dot" style="background: #818cf8;"></span> Project
+            <span class="graph-legend-dot" style="background: #f59e0b;"></span> Commitment
+            <span class="graph-legend-dot" style="background: #10b981;"></span> Goal
+          </div>
+          <div class="graph-zoom-controls">
+            <button id="btn-graph-zoom-in" class="zoom-btn" title="Zoom In">+</button>
+            <button id="btn-graph-zoom-out" class="zoom-btn" title="Zoom Out">-</button>
+          </div>
+        </div>
+
+        <!-- Node Details Inspector -->
+        <div class="card graph-inspector-card" id="graph-inspector-panel">
+          <div class="card-header">
+            <h3 class="card-title" id="graph-inspector-title">Entity Inspector</h3>
+            <span id="graph-inspector-badge" class="badge badge-fact">SELECT NODE</span>
+          </div>
+          <div class="card-body" id="graph-inspector-body">
+            <div style="color: var(--text-muted); font-size: 0.85rem; text-align: center; padding: 2rem 0;">
+              Click any node in the Context Graph to inspect attributes, temporal validity, and relational edges.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- =====================================================================
          SCREEN 3: SITUATIONS
          ===================================================================== -->
     <div id="screen-situations" class="screen-view hidden">
@@ -429,6 +537,53 @@
       <!-- 9-STAGE VERTICAL LIFECYCLE PIPELINE -->
       <div class="lifecycle-pipeline-container" id="lifecycle-pipeline-container">
         <div class="loading-skeleton">Select or load a situation to view vertical workflow...</div>
+      </div>
+    </div>
+
+    <!-- =====================================================================
+         SCREEN 5: HERMES REASONING RESULT
+         ===================================================================== -->
+    <div id="screen-hermes-reasoning" class="screen-view hidden">
+      <div class="screen-header">
+        <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; flex-wrap: wrap; gap: 1rem;">
+          <div>
+            <h2 class="screen-title">Hermes Reasoning Results</h2>
+            <span class="screen-subtitle">Bounded semantic synthesis and verified recommendations (Zero private chain-of-thought)</span>
+          </div>
+          <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <span class="badge badge-fact" style="font-size: 0.75rem;">🔒 ZERO CoT GUARD ACTIVE</span>
+            <button id="btn-refresh-hermes-results" class="btn btn-primary btn-sm">🔄 Refresh Results</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="hermes-results-list" id="hermes-reasoning-list-container">
+        <div class="loading-skeleton">Loading Hermes reasoning results...</div>
+      </div>
+    </div>
+
+    <!-- =====================================================================
+         SCREEN 6: INTERVENTION DECISION
+         ===================================================================== -->
+    <div id="screen-interventions" class="screen-view hidden">
+      <div class="screen-header">
+        <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; flex-wrap: wrap; gap: 1rem;">
+          <div>
+            <h2 class="screen-title">Intervention Policy Decisions</h2>
+            <span class="screen-subtitle">Deterministic policy evaluations matching urgency, actionability, and attention state</span>
+          </div>
+          <div class="filter-group" id="intervention-action-filters">
+            <button class="filter-btn active" data-action="ALL">All Decisions</button>
+            <button class="filter-btn" data-action="INTERRUPT">Interrupt</button>
+            <button class="filter-btn" data-action="BRIEFING">Briefing</button>
+            <button class="filter-btn" data-action="DEFER">Defer</button>
+            <button class="filter-btn" data-action="SUPPRESS">Suppress</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="interventions-list" id="interventions-list-container">
+        <div class="loading-skeleton">Loading intervention decisions...</div>
       </div>
     </div>
 
@@ -583,8 +738,8 @@
             <div style="display: flex; align-items: center; gap: 0.75rem;">
               <span style="font-size: 1.5rem;">🔄</span>
               <div>
-                <h3 style="font-size: 1.1rem; font-weight: 600; margin: 0;">Background Sync & OS Alerts</h3>
-                <span style="font-size: 0.8rem; color: var(--text-muted);">Proactive Situational Triage</span>
+                <h3 style="font-size: 1.1rem; font-weight: 600; margin: 0;">Local Intelligence Maintenance</h3>
+                <span style="font-size: 0.8rem; color: var(--text-muted);">Local Maintenance & Housekeeping</span>
               </div>
             </div>
             <span id="sync-status-badge" class="badge badge-recommendation">ACTIVE (30m)</span>

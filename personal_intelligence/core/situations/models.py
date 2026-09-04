@@ -31,13 +31,19 @@ def compute_deterministic_situation_identity(
     primary_entity_ids: Optional[List[str]] = None,
     goal_ids: Optional[List[str]] = None,
     trigger_origin_ids: Optional[List[str]] = None,
+    state_changes: Optional[List[str]] = None,
+    relationships: Optional[List[str]] = None,
+    evidence_ids: Optional[List[str]] = None,
 ) -> str:
     """
-    Generates a deterministic normalized identity hash from:
+    Generates a deterministic normalized identity hash from generic context:
       - situation_type
       - primary_entity_ids (sorted)
       - goal_ids (sorted)
-      - trigger_origin_ids (sorted)
+      - trigger_origin_ids / event_ids (sorted)
+      - state_changes (sorted)
+      - relationships (sorted)
+      - evidence_ids (sorted)
 
     Used strictly for deduplication without LLM calls.
     """
@@ -45,8 +51,18 @@ def compute_deterministic_situation_identity(
     norm_entities = sorted(str(e).strip().lower() for e in (primary_entity_ids or []) if e)
     norm_goals = sorted(str(g).strip().lower() for g in (goal_ids or []) if g)
     norm_triggers = sorted(str(t).strip().lower() for t in (trigger_origin_ids or []) if t)
+    norm_changes = sorted(str(c).strip().lower() for c in (state_changes or []) if c)
+    norm_rels = sorted(str(r).strip().lower() for r in (relationships or []) if r)
+    norm_ev = sorted(str(ev).strip().lower() for ev in (evidence_ids or []) if ev)
 
-    key_str = f"{norm_type}|{','.join(norm_entities)}|{','.join(norm_goals)}|{','.join(norm_triggers)}"
+    key_parts = [norm_type, ",".join(norm_entities), ",".join(norm_goals), ",".join(norm_triggers)]
+    if norm_changes:
+        key_parts.append(",".join(norm_changes))
+    if norm_rels:
+        key_parts.append(",".join(norm_rels))
+    if norm_ev:
+        key_parts.append(",".join(norm_ev))
+    key_str = "|".join(key_parts)
     return hashlib.sha256(key_str.encode("utf-8")).hexdigest()
 
 
@@ -85,6 +101,13 @@ class StandardSituationCategory(str, Enum):
 
 class SituationStatus(str, Enum):
     """Lifecycle status of a situation."""
+    # Canonical simple lifecycle states (Prompt 6)
+    CANDIDATE = "candidate"
+    ACTIVE = "active"
+    DECAYING = "decaying"
+    INACTIVE = "inactive"
+
+    # Compatibility aliases
     OPEN = "open"
     MONITORING = "monitoring"
     RESOLVED = "resolved"
@@ -92,8 +115,6 @@ class SituationStatus(str, Enum):
     EXPIRED = "expired"
     SUPPRESSED = "suppressed"
     DISMISSED = "dismissed"
-
-    # Aliases for backwards compatibility
     INVESTIGATING = "monitoring"
 
 
@@ -133,6 +154,10 @@ class Situation:
 
         # Normalize status & priority
         valid_statuses = {
+            SituationStatus.CANDIDATE.value,
+            SituationStatus.ACTIVE.value,
+            SituationStatus.DECAYING.value,
+            SituationStatus.INACTIVE.value,
             SituationStatus.OPEN.value,
             SituationStatus.MONITORING.value,
             SituationStatus.RESOLVED.value,
@@ -183,8 +208,28 @@ class Situation:
             self.expires_at = ensure_timezone_aware(self.expires_at, "expires_at")
 
     def is_active(self) -> bool:
-        """Returns True if the situation is in an active tracking state (OPEN or MONITORING)."""
-        return self.status in (SituationStatus.OPEN.value, SituationStatus.MONITORING.value)
+        """Returns True if the situation is in an active tracking state."""
+        return self.status in (
+            SituationStatus.ACTIVE.value,
+            SituationStatus.CANDIDATE.value,
+            SituationStatus.OPEN.value,
+            SituationStatus.MONITORING.value,
+        )
+
+    def is_decaying(self) -> bool:
+        """Returns True if the situation is decaying."""
+        return self.status == SituationStatus.DECAYING.value
+
+    def is_inactive(self) -> bool:
+        """Returns True if the situation is inactive or closed."""
+        return self.status in (
+            SituationStatus.INACTIVE.value,
+            SituationStatus.RESOLVED.value,
+            SituationStatus.CLOSED.value,
+            SituationStatus.EXPIRED.value,
+            SituationStatus.SUPPRESSED.value,
+            SituationStatus.DISMISSED.value,
+        )
 
     def is_expired(self, as_of: Optional[datetime] = None) -> bool:
         """Returns True if the situation has an expiration time in the past relative to as_of."""
@@ -205,8 +250,8 @@ class Situation:
     def schedule_evaluation(self, next_eval_dt: datetime) -> None:
         """Schedules future re-evaluation and transitions status to MONITORING if OPEN."""
         self.next_evaluation_at = ensure_timezone_aware(next_eval_dt, "next_eval_dt")
-        if self.status == SituationStatus.OPEN.value:
-            self.status = SituationStatus.MONITORING.value
+        if self.status in (SituationStatus.OPEN.value, SituationStatus.CANDIDATE.value):
+            self.status = SituationStatus.ACTIVE.value
         self.updated_at = datetime.now(timezone.utc)
 
     def resolve(self) -> None:
@@ -223,11 +268,21 @@ class Situation:
         triggers = self.context.get("trigger_origin_ids") or self.context.get("event_ids") or []
         if isinstance(triggers, str):
             triggers = [triggers]
+        state_changes = self.context.get("state_changes") or []
+        if isinstance(state_changes, str):
+            state_changes = [state_changes]
+        relationships = self.context.get("relationships") or []
+        if isinstance(relationships, str):
+            relationships = [relationships]
+        ev_ids = [str(e) for e in self.evidence if isinstance(e, (str, int))]
         return compute_deterministic_situation_identity(
             situation_type=self.type,
             primary_entity_ids=primary_entities,
             goal_ids=self.related_goals,
             trigger_origin_ids=triggers,
+            state_changes=state_changes,
+            relationships=relationships,
+            evidence_ids=ev_ids,
         )
 
     def compute_freshness(

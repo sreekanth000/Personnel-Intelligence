@@ -1,3 +1,6 @@
-from personal_intelligence.core.scheduler.background_sync import BackgroundSyncScheduler
+from personal_intelligence.core.scheduler.local_maintenance import (
+    BackgroundSyncScheduler,
+    LocalMaintenanceScheduler,
+)
 
-__all__ = ["BackgroundSyncScheduler"]
+__all__ = ["LocalMaintenanceScheduler", "BackgroundSyncScheduler"]

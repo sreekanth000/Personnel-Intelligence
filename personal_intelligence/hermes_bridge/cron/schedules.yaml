@@ -1,18 +1,42 @@
 # Recurring Hermes Cron Task Configurations for Personal Intelligence
-# Used to schedule periodic sweeps and maintenance without constant user intervention.
+# Clearly separated into:
+# 1. HERMES EXTERNAL OBSERVATION SCHEDULES ("Go observe the external world")
+# 2. PI LOCAL INTELLIGENCE EVALUATION ("Determine what the observations mean in the user's world")
+# 3. PI LOCAL MEMORY MAINTENANCE ("Consolidate, decay salience, and optimize")
 
 schedules:
-  - name: hourly_situation_sweep
+  # ===========================================================================
+  # 1. Hermes External Observation Schedules (Hermes-Owned)
+  # ===========================================================================
+  - name: scheduled_gmail_observation
+    cron: "*/15 * * * *"
+    description: "Hermes-scheduled external sweep of Gmail inbox via Hermes Connector. Feeds PI record_observation()."
+    mode: "no-agent"
+    command: "python -m personal_intelligence.hermes_bridge.scheduler --source gmail"
+
+  - name: scheduled_calendar_observation
+    cron: "*/30 * * * *"
+    description: "Hermes-scheduled external sweep of Google Calendar schedule via Hermes Connector. Feeds PI record_observation()."
+    mode: "no-agent"
+    command: "python -m personal_intelligence.hermes_bridge.scheduler --source calendar"
+
+  # ===========================================================================
+  # 2. PI Local Intelligence Evaluation (Operates purely on local PI SQLite state)
+  # ===========================================================================
+  - name: pi_local_intelligence_evaluation
     cron: "0 * * * *"
-    description: "Hourly sweep of buffered events and timeline to evaluate emerging situations and novelty."
+    description: "Hourly sweep of buffered local events and timeline to evaluate emerging situations and novelty."
     mode: "no-agent"
     command: "python -m personal_intelligence.core.situations.sweep"
 
-  - name: daily_pattern_compaction
+  # ===========================================================================
+  # 3. PI Local Memory Maintenance (Operates purely on local PI SQLite state)
+  # ===========================================================================
+  - name: pi_memory_maintenance
     cron: "0 3 * * *"
-    description: "Nightly pattern learning and cadence consolidation over recent timeline entries."
+    description: "Nightly memory maintenance, salience decay, pattern lifecycle evaluation, and database optimization."
     mode: "no-agent"
-    command: "python -m personal_intelligence.core.patterns.compaction"
+    command: "python -m personal_intelligence.core.memory.maintenance"
 
   - name: daily_morning_digest_prep
     cron: "30 6 * * *"

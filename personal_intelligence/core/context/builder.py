@@ -8,7 +8,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Set
 import uuid
 
-from personal_intelligence.core.context.models import BoundedReasoningContext
+from personal_intelligence.core.context.models import (
+    BoundedReasoningContext,
+    RelevantPersonalContext,
+)
 from personal_intelligence.core.events.models import Event, format_iso8601
 from personal_intelligence.core.goals.engine import GoalEngine
 from personal_intelligence.core.goals.models import Goal, GoalPriority
@@ -1139,3 +1142,103 @@ class ContextBuilder:
 {constraints_str}
 """
         return str(context)
+
+    def adapt_personal_context(
+        self,
+        personal_context: RelevantPersonalContext,
+    ) -> BoundedReasoningContext:
+        """
+        Adapts a structured RelevantPersonalContext into a BoundedReasoningContext.
+        Enforces token caps, epistemic bounds, and prompt injection demarcation.
+        """
+        return ReasoningContextAdapter.to_bounded_reasoning_context(personal_context)
+
+    def build_hermes_prompt_from_context(
+        self,
+        personal_context: RelevantPersonalContext,
+    ) -> str:
+        """
+        Adapts a structured RelevantPersonalContext into an epistemically demarcated Hermes prompt.
+        """
+        return ReasoningContextAdapter.to_hermes_prompt(personal_context)
+
+
+class ReasoningContextAdapter:
+    """
+    Reasoning Context Adapter between Personal Intelligence and Hermes Agent runtime.
+    Transforms generic RelevantPersonalContext into Hermes-specific bounded prompts.
+    Guarantees:
+    - Never injects the entire World Model or Context Graph.
+    - Strictly bounds context within token limits.
+    - Preserves provenance coordinates and uncertainties.
+    - Treats external observations as untrusted data.
+    """
+
+    @staticmethod
+    def to_bounded_reasoning_context(personal_context: RelevantPersonalContext) -> BoundedReasoningContext:
+        """Converts RelevantPersonalContext into a structured BoundedReasoningContext."""
+        sit_dict = personal_context.relevant_situations[0] if personal_context.relevant_situations else {
+            "id": personal_context.target_id,
+            "type": personal_context.target_type,
+            "created_at": personal_context.created_at,
+            "priority": personal_context.metadata.get("priority", "medium"),
+            "novelty": 0.0,
+            "context": {"summary": f"Context for {personal_context.target_type}"},
+        }
+
+        # Extract observed facts
+        observed_facts = list(personal_context.epistemic_bounds.get("observed_facts", []))
+        if not observed_facts and personal_context.supporting_evidence:
+            observed_facts = [
+                {
+                    "statement": ev.get("summary"),
+                    "source": ev.get("source"),
+                    "provenance": ev.get("provenance"),
+                    "timestamp": ev.get("event_time"),
+                    "confidence": "high",
+                }
+                for ev in personal_context.supporting_evidence
+            ]
+        if personal_context.relevant_entities:
+            for ent in personal_context.relevant_entities:
+                observed_facts.append({
+                    "statement": f"Known entity: {ent.get('name')} (type: {ent.get('entity_type')})",
+                    "source": "context_graph",
+                    "provenance": "context_graph",
+                    "timestamp": ent.get("created_at", ""),
+                    "confidence": "high",
+                })
+
+        # Extract inferences
+        inferences = personal_context.epistemic_bounds.get("inferences", [])
+        predictions = personal_context.epistemic_bounds.get("predictions", [])
+
+        return BoundedReasoningContext(
+            situation=sit_dict,
+            current_state=personal_context.relevant_state,
+            relevant_recent_timeline=personal_context.relevant_timeline,
+            active_goals=personal_context.relevant_goals,
+            uncertainties=personal_context.uncertainties,
+            observed_facts=observed_facts,
+            inferences=inferences,
+            predictions=predictions,
+            objective=f"Evaluate situation and personal context for {personal_context.target_type} [{personal_context.target_id}]",
+            context_id=f"ctx-{personal_context.target_id[:12]}",
+            metadata=personal_context.metadata,
+        )
+
+    @staticmethod
+    def to_hermes_prompt(personal_context: RelevantPersonalContext) -> str:
+        """
+        Renders an epistemically demarcated prompt for Hermes.
+        Returns minimal/no personal context for general questions.
+        """
+        if personal_context.is_empty():
+            return "### CONTEXT DIRECTIVE: General query. Zero personal context required."
+
+        bounded_ctx = ReasoningContextAdapter.to_bounded_reasoning_context(personal_context)
+        return bounded_ctx.to_prompt_string()
+
+
+# Canonical alias reflecting explicit responsibility
+ReasoningContextBuilder = ContextBuilder

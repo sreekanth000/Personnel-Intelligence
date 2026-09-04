@@ -42,12 +42,8 @@ from personal_intelligence.hermes_bridge.client import (
     HermesClient,
 )
 from personal_intelligence.hermes_bridge.connection_manager import HermesConnectionManager
-from personal_intelligence.hermes_bridge.pollers import (
-    HermesCalendarPoller,
-    HermesGenericPoller,
-    HermesGmailPoller,
-)
-from personal_intelligence.scheduler.daemon import PollingDaemon
+from personal_intelligence.hermes_bridge.scheduler import HermesObservationScheduler
+from personal_intelligence.scheduler.daemon import LocalEvaluationDaemon
 from personal_intelligence.storage.db import DatabaseManager
 
 
@@ -92,34 +88,23 @@ def main() -> None:
         else:
             print(f"        * {cap_name.capitalize():<16}: READY")
 
-    # 3. Create Evaluation Loop & Register Pollers
+    # 3. Create Local Evaluation Daemon & Hermes Observation Scheduler
     loop = PersonalIntelligenceEvaluationLoop(db_manager=db)
-    daemon = PollingDaemon(loop=loop, interval_minutes=args.interval)
+    daemon = LocalEvaluationDaemon(loop=loop, interval_minutes=args.interval)
 
-    daemon.register_source(HermesGmailPoller(hermes_client=loop.hermes_client))
-    daemon.register_source(HermesCalendarPoller(hermes_client=loop.hermes_client))
-    daemon.register_source(HermesGenericPoller(
-        capability_name="slack",
-        tool_name="slack_search",
-        tool_parameters={"query": "has:link OR from:me OR to:me"},
-        event_type="slack_message",
-        hermes_client=loop.hermes_client,
-    ))
-    daemon.register_source(HermesGenericPoller(
-        capability_name="whatsapp",
-        tool_name="whatsapp_search",
-        tool_parameters={"query": "recent"},
-        event_type="whatsapp_message",
-        hermes_client=loop.hermes_client,
-    ))
+    # Hermes-owned external observation scheduler
+    obs_scheduler = HermesObservationScheduler(
+        event_store=loop.event_store,
+        poll_interval_seconds=args.interval * 60,
+    )
 
-    # Run initial cycle
-    print(f"  [3/4] Initial Ingress:     Polling sources...")
+    # Run initial local evaluation cycle
+    print(f"  [3/4] Initial Ingress:     Evaluating local state...")
     try:
         daemon.run_once()
-        print(f"        Initial sync completed successfully.")
+        print(f"        Initial evaluation completed successfully.")
     except Exception as e:
-        print(f"        Sync initialized (Background queue ready: {e})")
+        print(f"        Evaluation initialized (Background queue ready: {e})")
 
     # Start daemon in background thread
     daemon_thread = threading.Thread(target=daemon.start, daemon=True)

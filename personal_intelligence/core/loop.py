@@ -1,34 +1,29 @@
 """
 Personal Intelligence Evaluation Loop.
 
-Unified, idempotent coordinator for the Personal Intelligence 25-step canonical sequence:
-1. Receive new observations
-2. Normalize observations
-3. Store observations with provenance
-4. Update temporal world model
-5. Compute current state
-6. Detect attention state
-7. Detect meaningful changes
-8. Detect novelty
-9. Evaluate personal significance
-10. Generate candidate situations
-11. Deduplicate/update situation lifecycle
-12. Evaluate reasoning eligibility
-13. Build bounded epistemic context
-14. Investigate information gaps through Hermes if required
-15. Ask Hermes to reason
-16. Validate Hermes structured output
-17. Calculate evidence strength deterministically
-18. Produce recommendation
-19. Evaluate deterministic intervention policy
-20. Present or defer recommendation
-21. Capture user response
-22. Capture outcome
-23. Store reasoning episode
-24. Update learned patterns
-25. Update world-model knowledge
+Unified, idempotent coordinator for the Personal Intelligence 19-stage canonical V1 sequence:
+1. OBSERVE (ObservationManager & EventBuffer ingest raw external observations)
+2. NORMALIZE (Event validation, schema normalization, and provenance assignment)
+3. TIMELINE (TimelineEngine chronological indexing and interval tracking)
+4. PERSONAL WORLD MODEL (PersonalWorldModel state, goal, and entity graph sync)
+5. CURRENT STATE (StateEngine point-in-time state & AttentionDetector)
+6. WHAT CHANGED (WhatChangedAnalyzer structured delta detection)
+7. NOVELTY (NoveltyEngine statistical anomaly & divergence detection)
+8. PERSONAL SIGNIFICANCE (PersonalSignificanceEngine priority & impact scoring)
+9. SITUATION DISCOVERY (SituationEngine candidate generation & lifecycle tracking)
+10. REASONING ELIGIBILITY (ReasoningEligibilityGate budget & gatekeeper)
+11. BOUNDED CONTEXT (ContextBuilder epistemic framing and boundary enforcement)
+12. HERMES REASONING (HermesClient & ReasoningWorkflow execution)
+13. EVIDENCE EVALUATION (EvidenceStrengthCalculator deterministic corroboration)
+14. RECOMMENDATION (Structured recommendation formulation)
+15. INTERVENTION POLICY (InterventionPolicyEngine delivery & quota governance)
+16. USER DECISION (User interaction, decision, and feedback capture)
+17. OUTCOME (Outcome tracking & longitudinal feedback audit)
+18. PATTERN LEARNING (LearningEngine empirical recurrence & pattern lifecycle)
+19. MEMORY MAINTENANCE (MemoryMaintenanceJob deterministic retention & consolidation)
 
-Blueprint Reference: §10 (Execution Model & Cycle Cadence), Prompt 2 & Prompt 3.
+Principle:
+  SIMPLE DETERMINISTIC SYSTEM + HERMES REASONING + LONGITUDINAL MEMORY
 """
 
 from dataclasses import dataclass, field
@@ -396,6 +391,7 @@ class PersonalIntelligenceEvaluationLoop:
         situations_needing_reasoning: List[Tuple[Situation, bool, ReasoningEligibilityResult]] = []
         significance_map: Dict[str, SignificanceAssessment] = {}
         eligibility_map: Dict[str, ReasoningEligibilityResult] = {}
+        recent_episodes = self.episode_store.list_recent(limit=10) if hasattr(self.episode_store, "list_recent") else []
 
         for cand in situation_eval.candidate_situations:
             sit, is_new = self.situation_lifecycle.register_or_update(
@@ -460,11 +456,17 @@ class PersonalIntelligenceEvaluationLoop:
                 is_new_situation=is_new,
                 has_new_events=bool(events_to_process),
                 is_due_reevaluation=False,
+                user_context=active_user_context,
+                reasoning_history=recent_episodes,
+                as_of=ref_dt,
             )
             eligibility_map[sit.id] = elig_decision
             stream.emit(
                 event_type="reasoning_eligibility",
-                summary=f"Reasoning eligibility: {elig_decision.eligibility} (Budget: {elig_decision.budget.budget_level.upper()})",
+                summary=(
+                    f"Reasoning eligibility: eligible={elig_decision.eligible} "
+                    f"(Value: {elig_decision.estimated_reasoning_value.upper()}, Cost: {elig_decision.cost_class.upper()})"
+                ),
                 situation_id=sit.id,
                 source="eligibility_gate",
             )
@@ -476,7 +478,7 @@ class PersonalIntelligenceEvaluationLoop:
                 early_exits.append(EarlyExitRecord(
                     situation_id=sit.id,
                     reason_code=reason_code,
-                    details=f"Eligibility determined as {elig_decision.eligibility}; Hermes reasoning skipped.",
+                    details=f"Eligibility determined as eligible={elig_decision.eligible}; Hermes reasoning skipped.",
                     timestamp=ref_dt,
                 ))
                 reason_codes[sit.id] = reason_code
@@ -500,6 +502,9 @@ class PersonalIntelligenceEvaluationLoop:
                     is_new_situation=False,
                     has_new_events=bool(events_to_process),
                     is_due_reevaluation=True,
+                    user_context=active_user_context,
+                    reasoning_history=recent_episodes,
+                    as_of=ref_dt,
                 )
                 eligibility_map[due_sit.id] = due_elig
                 if due_elig.requires_hermes:
@@ -615,17 +620,32 @@ class PersonalIntelligenceEvaluationLoop:
                 source="reasoning_workflow",
             )
 
-            # Step 17: Calculate evidence strength deterministically
-            calc_evidence_strength = self.evidence_calculator.calculate(
-                evidence_items=sit.evidence if isinstance(sit.evidence, list) else [],
+            # Step 17: Calculate evidence quality deterministically (PI is the sole authority)
+            resolved_evidence = []
+            if isinstance(sit.evidence, list):
+                for ev_ref in sit.evidence:
+                    if isinstance(ev_ref, str):
+                        stored_ev = self.event_store.get(ev_ref)
+                        if stored_ev:
+                            resolved_evidence.append(stored_ev.to_dict())
+                        else:
+                            resolved_evidence.append({"source": "event_reference", "source_id": ev_ref, "origin_event_id": ev_ref, "summary": ev_ref})
+                    elif isinstance(ev_ref, dict):
+                        resolved_evidence.append(ev_ref)
+
+            calc_evidence_quality = self.evidence_calculator.calculate(
+                evidence_items=resolved_evidence if resolved_evidence else (sit.evidence if isinstance(sit.evidence, list) else []),
                 reference_time=ref_dt,
             )
-            if calc_evidence_strength in ("weak", "insufficient_evidence") and synthesis and getattr(synthesis, "evidence_strength", None):
-                calc_evidence_strength = synthesis.evidence_strength
+            if calc_evidence_quality in ("weak", "insufficient_evidence") and synthesis and (getattr(synthesis, "evidence_quality", None) or getattr(synthesis, "evidence_strength", None)):
+                if sit.evidence:
+                    synth_eq = getattr(synthesis, "evidence_quality", None) or getattr(synthesis, "evidence_strength", None)
+                    calc_evidence_quality = synth_eq
+            calc_evidence_strength = calc_evidence_quality
 
             stream.emit(
                 event_type="evidence_evaluated",
-                summary=f"Evidence strength evaluated: {calc_evidence_strength.upper()}",
+                summary=f"Evidence quality evaluated: {calc_evidence_quality.upper()}",
                 situation_id=sit.id,
                 source="evidence_calculator",
             )
@@ -653,6 +673,7 @@ class PersonalIntelligenceEvaluationLoop:
                 urgency=urgency,
                 actionability=actionability,
                 relevance=relevance,
+                evidence_quality=calc_evidence_quality,
                 evidence_strength=calc_evidence_strength,
                 user_context=active_user_context,
                 already_notified=already_notified,

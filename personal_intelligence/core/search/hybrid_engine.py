@@ -252,12 +252,14 @@ class HybridSearchEngine:
         query: str,
         limit: int = 10,
         rrf_k: int = 60,
+        sync_unindexed: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Executes Hybrid Retrieval combining Dense Semantic and Sparse Lexical rankings
-        using Reciprocal Rank Fusion (RRF).
+        using Reciprocal Rank Fusion (RRF). Dense embeddings are computed on-demand.
         """
-        self.sync_all_unindexed()
+        if sync_unindexed:
+            self.sync_all_unindexed()
 
         dense_results = self.search_dense(query=query, limit=limit * 2)
         lexical_results = self.search_lexical(query=query, limit=limit * 2)

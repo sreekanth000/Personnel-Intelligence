@@ -652,3 +652,8 @@ class SituationStore:
             return matching
         finally:
             conn.close()
+
+    get_situation = get
+    update_situation = update
+    add_situation = create
+    get_open_situations = list_active

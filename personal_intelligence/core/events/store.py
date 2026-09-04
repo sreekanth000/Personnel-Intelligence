@@ -124,6 +124,9 @@ class EventStore:
                     raise
         return inserted
 
+    record_event = append
+    insert = append
+
     def get(self, event_id: str) -> Optional[Event]:
         """Retrieves a single event by its unique ID, or None if not found."""
         if not event_id or not isinstance(event_id, str):
@@ -155,6 +158,23 @@ class EventStore:
         try:
             cursor = conn.cursor()
             cursor.execute(query, (source.strip().lower(), str(source_id).strip()))
+            row = cursor.fetchone()
+            if row:
+                return self._row_to_event(row)
+            return None
+        finally:
+            conn.close()
+
+    def get_by_hash(self, event_hash: str) -> Optional[Event]:
+        """Retrieves an event by its unique deterministic event_hash (idempotency key)."""
+        if not event_hash:
+            return None
+
+        query = "SELECT * FROM event_log WHERE event_hash = ? LIMIT 1;"
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(query, (event_hash,))
             row = cursor.fetchone()
             if row:
                 return self._row_to_event(row)
@@ -201,6 +221,10 @@ class EventStore:
     def get_recent(self, limit: int = 100) -> List[Event]:
         """Returns the most recent events ordered newest to oldest."""
         return self.query_by_time(limit=limit, order="desc")
+
+    def list_all(self, limit: int = 100) -> List[Event]:
+        """Alias for get_recent."""
+        return self.get_recent(limit=limit)
 
     def get_events_by_type(self, event_type: str, limit: int = 100) -> List[Event]:
         """Alias for query_by_type."""

@@ -5,9 +5,11 @@ Situation assessment and situational context module.
 from personal_intelligence.core.situations.eligibility import (
     ReasoningBudget,
     ReasoningBudgetLevel,
+    ReasoningCostClass,
     ReasoningEligibility,
     ReasoningEligibilityGate,
     ReasoningEligibilityResult,
+    ReasoningValueLevel,
 )
 from personal_intelligence.core.situations.engine import SituationEngine
 from personal_intelligence.core.situations.lifecycle import (
@@ -36,6 +38,8 @@ __all__ = [
     "ReasoningEligibility",
     "ReasoningEligibilityGate",
     "ReasoningEligibilityResult",
+    "ReasoningValueLevel",
+    "ReasoningCostClass",
     "ReasoningBudget",
     "ReasoningBudgetLevel",
 ]

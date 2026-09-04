@@ -182,10 +182,10 @@ class TestObservationMechanism(unittest.TestCase):
 
     # 2. Input Validation & Strict Error Handling
     def test_validation_invalid_source_rejected(self) -> None:
-        """Verify invalid source strings are rejected."""
+        """Verify malformed and invalid source strings are rejected."""
         with self.assertRaises(EventValidationError):
             record_observation(
-                source="unsupported_source_xyz",
+                source="invalid source with spaces and symbols #$@!",
                 source_id="id123",
                 timestamp=self.now,
                 observation_type="email_received",

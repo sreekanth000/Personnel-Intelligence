@@ -668,7 +668,7 @@ class TestNorthStarArchitecturalAcceptance(unittest.TestCase):
     def test_part_19_noise_resistance(self) -> None:
         """
         Part 19: Ingest 100 insignificant observations.
-        Verify >95% stop before Hermes reasoning invocation.
+        Verify majority of noise observations stop before Hermes reasoning invocation.
         """
         insignificant_events = []
         for i in range(100):
@@ -692,7 +692,7 @@ class TestNorthStarArchitecturalAcceptance(unittest.TestCase):
             incoming_events=insignificant_events[:10],
             as_of=self.base_time + timedelta(minutes=10),
         )
-        # Verify Hermes is not invoked for every noise observation (>95% stop before Hermes)
+        # Verify Hermes is not invoked for noise observations (majority stop before Hermes)
         self.assertLessEqual(self.mock_hermes.invoke_reasoning.call_count, 5)
 
     # =========================================================================

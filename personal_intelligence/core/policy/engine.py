@@ -19,17 +19,20 @@ from personal_intelligence.core.policy.models import (
     InvestigationStatus,
     PolicyAction,
     PolicyEvaluationResult,
+    PresentationAction,
+    PresentationDecision,
     SituationFreshness,
     UserContext,
 )
 
 
-def decide_intervention(
+def decide_presentation(
     urgency: Any,
     actionability: Any = "high",
     relevance: Any = "high",
-    evidence_strength: Any = "strong",
-    attention_state: Any = "available",
+    evidence_quality: Any = None,
+    personal_significance: Any = None,
+    user_context: Any = "available",
     dnd: bool = False,
     freshness: Any = "fresh",
     duplicate: bool = False,
@@ -38,30 +41,36 @@ def decide_intervention(
     recently_notified: bool = False,
     recently_dismissed: bool = False,
     critical_bypass_dnd: bool = False,
-) -> PolicyEvaluationResult:
+    evidence_strength: Any = None,
+    attention_state: Any = None,
+    **kwargs: Any,
+) -> PresentationDecision:
     """
-    Pure deterministic function deciding intervention action with zero LLM calls or randomness.
+    Pure deterministic public function deciding presentation routing with zero LLM calls or randomness.
     
-    Precedence Order:
-      1. Situation resolved? -> DISCARD
-      2. Duplicate / already notified? -> SUPPRESS / DISCARD
-      3. Evidence conflicted? -> DEFER if potentially consequential, SUPPRESS if non-consequential
-      4. Investigation incomplete? -> DEFER if high/critical consequence, SUPPRESS/BRIEFING if low consequence
-      5. Recently dismissed? -> SUPPRESS
-      6. Stale/expired situation? -> DISCARD
-      7. Critical urgency? -> INTERRUPT (unless blocked by DND/meeting/deep-work or weak evidence)
-      8. High urgency? -> INTERRUPT when actionable now, evidence sufficient, and available; otherwise DEFER
-      9. Medium urgency? -> BRIEFING unless busy/focused -> DEFER
-      10. Low urgency? -> BRIEFING if actionable and useful; otherwise SUPPRESS/DISCARD
+    Target Architectural Contract:
+    PI makes a presentation-routing decision with exactly five canonical outcomes:
+      - INTERRUPT: Proactively present recommendation to the user immediately.
+      - BRIEFING: Queue recommendation silently for the next scheduled briefing/digest.
+      - DEFER: Defer presentation until the user becomes available or evidence strengthens.
+      - SUPPRESS: Suppress presentation due to focus mode, quiet hours, or dismissal cooldown.
+      - DISCARD: Silently discard recommendation (low value, duplicate, resolved, or stale).
+
+    Internal precedence rules (hygiene, evidence validity, attention context, urgency)
+    are encapsulated cleanly behind this public PresentationDecision API.
     """
     engine = InterventionPolicyEngine()
-    ctx = UserContext.DND.value if dnd else attention_state
+    eff_ctx = attention_state if attention_state is not None else user_context
+    ctx = UserContext.DND.value if dnd else eff_ctx
     sit_resolved = str(situation_status).strip().lower() in ("resolved", "closed")
+    ev_val = evidence_quality if evidence_quality is not None else (evidence_strength if evidence_strength is not None else "strong")
 
     return engine.evaluate(
         urgency=urgency,
         actionability=actionability,
-        evidence_strength=evidence_strength,
+        evidence_quality=ev_val,
+        evidence_strength=ev_val,
+        personal_significance=personal_significance,
         user_context=ctx,
         relevance=relevance,
         already_notified=recently_notified or duplicate,
@@ -70,7 +79,12 @@ def decide_intervention(
         situation_resolved=sit_resolved,
         investigation_status=investigation_status,
         critical_bypass_dnd=critical_bypass_dnd,
+        **kwargs,
     )
+
+
+# Backward-compatible alias
+decide_intervention = decide_presentation
 
 
 class InterventionPolicyEngine:
@@ -141,12 +155,13 @@ class InterventionPolicyEngine:
             return UserContext.UNKNOWN.value
         return raw
 
-    def evaluate(
+    def decide_presentation(
         self,
         urgency: str,
         actionability: str,
-        evidence_strength: str,
-        user_context: str,
+        evidence_quality: Optional[str] = None,
+        personal_significance: Optional[str] = None,
+        user_context: str = "available",
         relevance: Optional[str] = "high",
         already_notified: bool = False,
         recently_dismissed: bool = False,
@@ -156,9 +171,51 @@ class InterventionPolicyEngine:
         investigation_status: Optional[str] = "complete",
         interaction_patterns: Optional[Any] = None,
         interaction_preferences: Optional[Dict[str, Any]] = None,
-    ) -> PolicyEvaluationResult:
+        evidence_strength: Optional[str] = None,
+        **kwargs: Any,
+    ) -> PresentationDecision:
+        """Alias for evaluate() returning canonical PresentationDecision."""
+        return self.evaluate(
+            urgency=urgency,
+            actionability=actionability,
+            evidence_strength=evidence_strength,
+            user_context=user_context,
+            relevance=relevance,
+            already_notified=already_notified,
+            recently_dismissed=recently_dismissed,
+            situation_freshness=situation_freshness,
+            situation_resolved=situation_resolved,
+            critical_bypass_dnd=critical_bypass_dnd,
+            investigation_status=investigation_status,
+            interaction_patterns=interaction_patterns,
+            interaction_preferences=interaction_preferences,
+            evidence_quality=evidence_quality,
+            personal_significance=personal_significance,
+            **kwargs,
+        )
+
+    def evaluate(
+        self,
+        urgency: str,
+        actionability: str,
+        evidence_strength: Optional[str] = None,
+        user_context: str = "available",
+        relevance: Optional[str] = "high",
+        already_notified: bool = False,
+        recently_dismissed: bool = False,
+        situation_freshness: Optional[str] = "fresh",
+        situation_resolved: bool = False,
+        critical_bypass_dnd: bool = False,
+        investigation_status: Optional[str] = "complete",
+        interaction_patterns: Optional[Any] = None,
+        interaction_preferences: Optional[Dict[str, Any]] = None,
+        evidence_quality: Optional[str] = None,
+        personal_significance: Optional[str] = None,
+        **kwargs: Any,
+    ) -> PresentationDecision:
         """
-        Evaluates categorical inputs and returns a deterministic PolicyEvaluationResult.
+        Evaluates categorical inputs and returns a deterministic PresentationDecision.
+        Evaluates evidence quality (support level) rather than claiming objective conclusion certainty.
 
         Precedence Order:
           1. Resolved situation -> DISCARD
@@ -167,8 +224,8 @@ class InterventionPolicyEngine:
           4. Investigation incomplete -> DEFER if high/critical consequence, SUPPRESS/BRIEFING if low
           5. Recently dismissed -> SUPPRESS
           6. Stale or expired -> DISCARD
-          7. Critical urgency -> INTERRUPT (respects DND/meeting unless bypass; defers on weak evidence)
-          8. High urgency -> INTERRUPT when actionable, evidence strong/moderate, available; otherwise DEFER
+          7. Critical urgency -> INTERRUPT (respects DND/meeting unless bypass; defers on weak evidence quality)
+          8. High urgency -> INTERRUPT when actionable, evidence quality strong/moderate, available; otherwise DEFER
           9. Medium urgency -> BRIEFING (defers when busy/in-meeting/deep-work)
           10. Low urgency -> BRIEFING if actionable & fresh; otherwise SUPPRESS / DISCARD
         """
@@ -182,7 +239,14 @@ class InterventionPolicyEngine:
         norm_relevance = relevance.value if hasattr(relevance, "value") else str(relevance or "high")
         norm_relevance = norm_relevance.strip().lower()
 
-        norm_evidence = evidence_strength.value if hasattr(evidence_strength, "value") else str(evidence_strength)
+        norm_significance = (
+            personal_significance.value
+            if hasattr(personal_significance, "value")
+            else str(personal_significance or "")
+        ).strip().lower() if personal_significance is not None else None
+
+        raw_ev = evidence_quality if evidence_quality is not None else (evidence_strength if evidence_strength is not None else "strong")
+        norm_evidence = raw_ev.value if hasattr(raw_ev, "value") else str(raw_ev)
         norm_evidence = norm_evidence.strip().lower()
 
         norm_context = self.normalize_user_context(user_context)
@@ -195,13 +259,15 @@ class InterventionPolicyEngine:
 
         now = datetime.now(timezone.utc)
 
-        def _result(action: str, reason: str) -> PolicyEvaluationResult:
-            return PolicyEvaluationResult(
+        def _result(action: str, reason: str) -> PresentationDecision:
+            return PresentationDecision(
                 action=action,
                 reason=reason,
                 urgency=norm_urgency,
                 actionability=norm_actionability,
                 relevance=norm_relevance,
+                personal_significance=norm_significance,
+                evidence_quality=norm_evidence,
                 evidence_strength=norm_evidence,
                 user_context=norm_context,
                 situation_freshness=norm_freshness,
@@ -280,13 +346,18 @@ class InterventionPolicyEngine:
             )
 
         # ---------------------------------------------------------------
-        # 7. CRITICAL Urgency: INTERRUPT (respects DND/sleep unless bypass; defers on weak evidence)
+        # 7. CRITICAL Urgency: INTERRUPT (respects suppression/focus unless user bypass; defers on weak evidence)
         # ---------------------------------------------------------------
         if norm_urgency == "critical":
-            if norm_evidence in ("weak", "insufficient_evidence"):
+            if norm_evidence in ("weak", "insufficient_evidence", "conflicted"):
                 return _result(
                     PolicyAction.DEFER.value,
                     "Critical urgency with weak/insufficient evidence; deferring until evidence strengthens.",
+                )
+            if norm_actionability in ("low", "none", "not_actionable"):
+                return _result(
+                    PolicyAction.BRIEFING.value,
+                    "Critical urgency with low or no immediate actionability routed to briefing digest; Hermes cannot force interrupt.",
                 )
             dnd_contexts = {
                 UserContext.DO_NOT_DISTURB.value,
@@ -304,7 +375,7 @@ class InterventionPolicyEngine:
             if norm_context in dnd_contexts and not critical_bypass_dnd:
                 return _result(
                     PolicyAction.DEFER.value,
-                    f"Critical situation deferred due to hard DND/sleep/deep-work context ({norm_context}) without DND bypass.",
+                    f"Critical situation deferred due to suppression/focus context ({norm_context}). Hermes cannot force interrupt.",
                 )
             return _result(
                 PolicyAction.INTERRUPT.value,
@@ -407,4 +478,60 @@ class InterventionPolicyEngine:
         return _result(
             PolicyAction.DISCARD.value,
             f"Unrecognized user context '{norm_context}'; defaulting to silent discard.",
+        )
+
+    def evaluate_recommendation(
+        self,
+        recommendation: Any,
+        user_context: Any = "available",
+        evidence_strength: Any = "strong",
+        situation_freshness: Any = "fresh",
+        situation_resolved: bool = False,
+        recently_notified: bool = False,
+        recently_dismissed: bool = False,
+        dnd: bool = False,
+        **kwargs: Any,
+    ) -> PolicyEvaluationResult:
+        """
+        Evaluates a recommendation or Hermes reasoning output strictly through PI Intervention Policy.
+
+        Guarantees:
+          1. Policy cannot be bypassed: Forced actions or bypass flags passed by Hermes/LLM are ignored.
+          2. Critical Hermes output cannot force interruption: Evaluated against user context, evidence, and actionability.
+          3. Presentation-only decision: Policy decides INTERRUPT, BRIEFING, DEFER, SUPPRESS, or DISCARD.
+        """
+        norm_urg = "medium"
+        norm_act = "medium"
+        norm_rel = "high"
+
+        norm_sig = None
+        if isinstance(recommendation, dict):
+            norm_urg = recommendation.get("urgency") or recommendation.get("priority") or "medium"
+            norm_act = recommendation.get("actionability") or "medium"
+            norm_rel = recommendation.get("relevance") or "high"
+            norm_sig = recommendation.get("personal_significance") or recommendation.get("significance")
+        elif hasattr(recommendation, "urgency"):
+            norm_urg = getattr(recommendation, "urgency", "medium")
+            norm_act = getattr(recommendation, "actionability", "medium")
+            norm_rel = getattr(recommendation, "relevance", "high")
+            norm_sig = getattr(recommendation, "personal_significance", getattr(recommendation, "significance", None))
+        else:
+            norm_sig = kwargs.get("personal_significance") or kwargs.get("significance")
+
+        ctx = UserContext.DND.value if dnd else user_context
+
+        # Hermes or external LLM cannot force critical_bypass_dnd
+        return self.evaluate(
+            urgency=norm_urg,
+            actionability=norm_act,
+            evidence_strength=evidence_strength,
+            personal_significance=norm_sig,
+            user_context=ctx,
+            relevance=norm_rel,
+            already_notified=recently_notified,
+            recently_dismissed=recently_dismissed,
+            situation_freshness=situation_freshness,
+            situation_resolved=situation_resolved,
+            critical_bypass_dnd=False,
+            **kwargs,
         )

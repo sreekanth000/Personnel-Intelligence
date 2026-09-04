@@ -32,11 +32,20 @@ class EpisodeStatus(str, Enum):
 class RecommendationResult(str, Enum):
     """
     Standard categorization for user responses and longitudinal recommendation outcomes.
+    Keep USER RESPONSE strictly separate from OUTCOME.
+    An accepted recommendation does not automatically mean it succeeded.
     """
+    # User Responses
+    ACCEPT = "ACCEPT"
     ACCEPTED = "ACCEPTED"
+    DISMISS = "DISMISS"
     DISMISSED = "DISMISSED"
+    IGNORE = "IGNORE"
     IGNORED = "IGNORED"
+    DEFER = "DEFER"
     DEFERRED = "DEFERRED"
+
+    # Empirical Outcomes (evidence-backed)
     COMPLETED = "COMPLETED"
     PARTIALLY_COMPLETED = "PARTIALLY_COMPLETED"
     UNKNOWN = "UNKNOWN"
@@ -182,6 +191,7 @@ class ReasoningEpisode:
     urgency: Optional[str] = None
     actionability: Optional[str] = None
     relevance: Optional[str] = None
+    evidence_quality: Optional[str] = None
     evidence_strength: Optional[str] = None
     intervention_decision: Optional[Dict[str, Any]] = None
     user_response: Optional[Dict[str, Any]] = None
@@ -216,6 +226,7 @@ class ReasoningEpisode:
         urgency: Optional[str] = None,
         actionability: Optional[str] = None,
         relevance: Optional[str] = None,
+        evidence_quality: Optional[str] = None,
         evidence_strength: Optional[str] = None,
         intervention_decision: Optional[Dict[str, Any]] = None,
         user_response: Optional[Dict[str, Any]] = None,
@@ -254,7 +265,14 @@ class ReasoningEpisode:
         self.urgency = urgency or self._custom_metadata.get("urgency")
         self.actionability = actionability or self._custom_metadata.get("actionability")
         self.relevance = relevance or self._custom_metadata.get("relevance")
-        self.evidence_strength = evidence_strength or self._custom_metadata.get("evidence_strength")
+        eq_val = (
+            evidence_quality
+            or evidence_strength
+            or self._custom_metadata.get("evidence_quality")
+            or self._custom_metadata.get("evidence_strength")
+        )
+        self.evidence_quality = str(eq_val).lower() if eq_val else None
+        self.evidence_strength = self.evidence_quality
         self.intervention_decision = intervention_decision
         self.user_response = user_response
         self.outcome = outcome
@@ -462,6 +480,7 @@ class ReasoningEpisode:
             "urgency": self.urgency,
             "actionability": self.actionability,
             "relevance": self.relevance,
+            "evidence_quality": self.evidence_quality,
             "evidence_strength": self.evidence_strength,
             "intervention_decision": self.intervention_decision,
             "user_response": self.user_response,
@@ -505,6 +524,7 @@ class ReasoningEpisode:
             urgency=data.get("urgency"),
             actionability=data.get("actionability"),
             relevance=data.get("relevance"),
+            evidence_quality=data.get("evidence_quality"),
             evidence_strength=data.get("evidence_strength"),
             intervention_decision=data.get("intervention_decision"),
             user_response=data.get("user_response"),

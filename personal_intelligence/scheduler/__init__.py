@@ -2,6 +2,10 @@
 Background scheduling and daemon execution for Personal Intelligence.
 """
 
-from personal_intelligence.scheduler.daemon import PollingDaemon, SourcePoller
+from personal_intelligence.scheduler.daemon import (
+    LocalEvaluationDaemon,
+    PollingDaemon,
+    SourcePoller,
+)
 
-__all__ = ["PollingDaemon", "SourcePoller"]
+__all__ = ["PollingDaemon", "LocalEvaluationDaemon", "SourcePoller"]

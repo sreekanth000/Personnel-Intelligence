@@ -35,13 +35,17 @@ from personal_intelligence.core.goals.store import GoalStore
 from personal_intelligence.core.patterns.models import Pattern
 from personal_intelligence.core.patterns.store import PatternStore
 from personal_intelligence.core.search.hybrid_engine import HybridSearchEngine
+from personal_intelligence.core.search.retriever import PersonalMemoryRetriever, RetrievalItem
 from personal_intelligence.core.situations.models import Situation
 from personal_intelligence.core.situations.store import SituationStore
 from personal_intelligence.core.state.engine import StateEngine
 from personal_intelligence.core.timeline.engine import TimelineEngine
 from personal_intelligence.core.world.changes import WhatChangedAnalyzer
 from personal_intelligence.core.world.model import PersonalWorldModel
-from personal_intelligence.hermes_bridge.client import HermesClient
+from personal_intelligence.hermes_bridge.client import (
+    HermesClient,
+    HermesInvocationRequest,
+)
 from personal_intelligence.hermes_bridge.situation_investigation import (
     SituationInvestigator,
 )
@@ -153,6 +157,7 @@ class AskPersonalIntelligenceEngine:
             db_manager=self.db_manager,
         )
         self.activity_stream = activity_stream or ActivityStream.get_instance()
+        self.memory_retriever = PersonalMemoryRetriever(db_manager=self.db_manager)
         self.hybrid_search_engine = HybridSearchEngine(db_manager=self.db_manager)
         self.fusion_engine = MultiSourceFusionEngine(
             db_manager=self.db_manager,
@@ -166,7 +171,7 @@ class AskPersonalIntelligenceEngine:
         """
         Main query handler.
         1. Emits reasoning_started lifecycle event
-        2. Executes in-process Local Hybrid Semantic & Lexical Search
+        2. Executes in-process Personal Memory Retrieval (SQL + FTS + Timeline + Entity Lookup)
         3. Gathers complete Personal World Model context
         4. Synthesizes grounded response via Hermes reasoning with zero hallucinations
         5. Emits reasoning_completed lifecycle event
@@ -179,16 +184,38 @@ class AskPersonalIntelligenceEngine:
                 recommended_next_step="Enter a question such as 'What should I be aware of today?'",
             )
 
-        # 1. Execute In-Process Hybrid Semantic Search
+        # 1. Execute Personal Memory Retrieval (Default: Structured + Lexical, zero embeddings)
         semantic_hits = []
         try:
-            semantic_hits = self.hybrid_search_engine.search_hybrid(query=clean_query, limit=5)
+            retrieval_items = self.memory_retriever.retrieve(
+                query=clean_query,
+                situation_id=situation_id,
+                limit=5,
+                allow_semantic_escalation=False,
+            )
+            semantic_hits = [
+                {
+                    "id": it.id,
+                    "source_type": it.source_type,
+                    "source_id": it.source_id,
+                    "content_text": it.title if it.source_type == "event" else it.content_text,
+                    "score": it.score,
+                    "retrieval_mode": it.retrieval_mode,
+                    "provenance": it.provenance,
+                    "evidence_references": it.evidence_references,
+                    "metadata": it.metadata,
+                }
+                for it in retrieval_items
+            ]
+            # If 0 hits and hybrid engine has indexed vectors, try hybrid search
+            if not semantic_hits:
+                semantic_hits = self.hybrid_search_engine.search_hybrid(query=clean_query, limit=5)
         except Exception as ex_search:
-            logger.debug("Semantic search note: %s", ex_search)
+            logger.debug("Memory retrieval note: %s", ex_search)
 
         self.activity_stream.emit(
             "reasoning_started",
-            f"Processing user inquiry: '{clean_query[:60]}...' (Found {len(semantic_hits)} semantic context matches)",
+            f"Processing user inquiry: '{clean_query[:60]}...' (Found {len(semantic_hits)} memory context matches)",
             source="ask_personal_intelligence_engine",
         )
 

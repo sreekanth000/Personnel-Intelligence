@@ -105,8 +105,15 @@ class EventIngestionService:
         except (ValueError, TypeError):
             return None, f"'confidence' must be numeric, got {raw_confidence}."
 
-        # 5. Normalize event_id
+        # 5. Normalize event_id and optional metadata
         event_id = str(raw_event_id) if raw_event_id and str(raw_event_id).strip() else str(uuid.uuid4())
+        raw_prov = raw_data.get("provenance")
+        raw_source_id = raw_data.get("source_id") or raw_data.get("source_reference")
+        raw_source_type = raw_data.get("source_type")
+        raw_entity_refs = raw_data.get("entity_refs")
+        raw_summary = raw_data.get("summary")
+        raw_schema_version = raw_data.get("schema_version", "1.0")
+        raw_created_at = raw_data.get("created_at") or raw_data.get("ingested_at") or raw_data.get("observed_at")
 
         try:
             event = Event(
@@ -117,6 +124,13 @@ class EventIngestionService:
                 payload=raw_payload,
                 event_time=event_time,
                 confidence=confidence,
+                provenance=raw_prov,
+                source_id=raw_source_id,
+                source_type=raw_source_type,
+                entity_refs=raw_entity_refs,
+                summary=raw_summary,
+                schema_version=raw_schema_version,
+                created_at=raw_created_at,
             )
             return event, None
         except EventValidationError as e:

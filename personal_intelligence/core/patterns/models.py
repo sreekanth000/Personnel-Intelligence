@@ -255,6 +255,15 @@ class Pattern:
             return f"Historically, similar situations were often followed by: {desc}"
         return desc
 
+    @property
+    def evidence_quality(self) -> str:
+        """Communicates empirical evidence quality support."""
+        return self.evidence_strength
+
+    @evidence_quality.setter
+    def evidence_quality(self, val: str) -> None:
+        self.evidence_strength = str(val).strip().lower()
+
     def to_dict(self) -> Dict[str, Any]:
         """Serializes pattern to dictionary."""
         return {
@@ -269,6 +278,7 @@ class Pattern:
             "last_observed": format_iso8601(self.last_seen),
             "support_count": self.support_count,
             "contradiction_count": self.contradiction_count,
+            "evidence_quality": self.evidence_quality,
             "evidence_strength": self.evidence_strength,
             "status": self.status,
             "lifecycle_status": self.status,
@@ -310,7 +320,7 @@ class Pattern:
             last_seen=ensure_timezone_aware(l_seen, "last_seen"),
             support_count=int(data.get("support_count", 1)),
             contradiction_count=int(data.get("contradiction_count", 0)),
-            evidence_strength=str(data.get("evidence_strength", "weak")),
+            evidence_strength=str(data.get("evidence_quality") or data.get("evidence_strength", "weak")),
             status=str(data.get("status", PatternStatus.OBSERVED.value)),
             metadata=meta,
         )

@@ -4,7 +4,7 @@ Unit & Integration Test Suite for Advanced Cognitive Intelligence Engines.
 Verifies:
 1. Predictive Processing & Expectation Engine (Free Energy prediction error)
 2. Theory of Mind Interpersonal Dynamics (`PersonEntity` & urgency multipliers)
-3. Hippocampal Memory Consolidation (Event log schema compaction)
+3. Memory Maintenance & Consolidation (Deterministic lifecycle & decay)
 4. Multi-Step Causal Monte Carlo Tree Search (MCTS Pareto decision trees)
 5. PersonalWorldModel integration
 """
@@ -18,7 +18,7 @@ import unittest
 from personal_intelligence.core.events.models import Event
 from personal_intelligence.core.world.model import PersonalWorldModel
 from personal_intelligence.core.world.person_model import PersonEntity
-from personal_intelligence.core.world.predictive import ExpectedState
+from personal_intelligence.experimental.predictive import ExpectedState, PredictiveProcessingEngine
 from personal_intelligence.storage.db import DatabaseManager
 
 
@@ -35,31 +35,37 @@ class TestCognitiveIntelligenceEngines(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
-    def test_predictive_processing_expectation_and_delta(self) -> None:
+    def test_predictive_processing_experimental_isolation_and_v1_decoupling(self) -> None:
         wm = self.world_model
 
-        # 1. Retrieve baseline expectation
-        exp = wm.predictive_engine.get_expected_state()
+        # 1. Verify V1 PersonalWorldModel does NOT have active predictive engine or evaluate_prediction_error
+        self.assertFalse(hasattr(wm, "predictive_engine"))
+        self.assertFalse(hasattr(wm, "evaluate_prediction_error"))
+
+        # 2. Verify experimental PredictiveProcessingEngine operates standalone
+        pred_engine = PredictiveProcessingEngine(db_manager=self.db_manager)
+        exp = pred_engine.get_expected_state()
         self.assertIsNotNone(exp)
         self.assertIn("time_window_key", exp.to_dict())
 
-        # 2. Routine event -> low prediction error
+        # 3. Routine event -> low prediction error
         routine_evt = Event(
             source="calendar",
             event_type="calendar_event",
             payload={"summary": "Daily Engineering Standup Sync"},
         )
-        delta_routine = wm.evaluate_prediction_error(routine_evt)
+        delta_routine = pred_engine.calculate_prediction_error(routine_evt)
         self.assertLess(delta_routine, 0.5)
 
-        # 3. Biometric sleep deficit event -> high prediction error
+        # 4. Biometric sleep deficit event -> high prediction error
         strain_evt = Event(
             source="health_tracker",
             event_type="biometric_alert",
             payload={"summary": "Abnormal sleep duration recorded", "duration_minutes": 210},
         )
-        delta_strain = wm.evaluate_prediction_error(strain_evt)
+        delta_strain = pred_engine.calculate_prediction_error(strain_evt)
         self.assertGreaterEqual(delta_strain, 0.5)
+
 
     def test_theory_of_mind_person_model_and_urgency(self) -> None:
         wm = self.world_model
@@ -85,7 +91,7 @@ class TestCognitiveIntelligenceEngines(unittest.TestCase):
         self.assertGreater(urgency_mgr, urgency_unknown)
         self.assertGreater(urgency_mgr, 1.3)
 
-    def test_hippocampal_memory_compaction(self) -> None:
+    def test_memory_maintenance_consolidation(self) -> None:
         wm = self.world_model
 
         # Record raw observations with valid provenance
@@ -98,14 +104,28 @@ class TestCognitiveIntelligenceEngines(unittest.TestCase):
             provenance={"tool": "gmail_search", "query": "msg-101"},
         )
 
-        summary = wm.compact_memory_schema(hours_back=24)
-        self.assertGreaterEqual(summary.raw_events_scanned, 1)
-        self.assertGreaterEqual(summary.nodes_created_or_updated, 1)
+        summary = wm.run_memory_maintenance(retention_days=30, salience_decay_days=1.0)
+        self.assertIsNotNone(summary)
+        self.assertTrue(summary.db_optimized)
 
-    def test_mcts_multi_step_tree_search(self) -> None:
+        # Verify raw event remains strictly intact and immutable
+        events = wm.event_store.get_recent(limit=10)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].source_id, "msg-101")
+        self.assertEqual(events[0].provenance["tool"], "gmail_search")
+
+    def test_mcts_experimental_isolation_and_v1_decoupling(self) -> None:
+        """Verifies MCTS is decoupled from V1 World Model and isolated in experimental/."""
         wm = self.world_model
 
-        tree_res = wm.run_mcts_tree_search(
+        # 1. Assert PersonalWorldModel V1 interface does NOT contain MCTS
+        self.assertFalse(hasattr(wm, "mcts_simulator"))
+        self.assertFalse(hasattr(wm, "run_mcts_tree_search"))
+
+        # 2. Assert MCTS is isolated and operational in personal_intelligence.experimental
+        from personal_intelligence.experimental import MCTSWorldSimulator, MCTSOptionNode
+        sim = MCTSWorldSimulator()
+        tree_res = sim.evaluate_decision_tree(
             situation_id="sit-mcts-001",
             scenario_title="Executive Committee Threat Mitigation Conflict",
         )
@@ -114,6 +134,7 @@ class TestCognitiveIntelligenceEngines(unittest.TestCase):
         self.assertGreater(len(tree_res.ranked_options), 1)
         self.assertGreater(tree_res.recommended_option.pareto_utility_score, 0.5)
         self.assertTrue(len(tree_res.recommended_option.option_title) > 0)
+
 
 
 if __name__ == "__main__":

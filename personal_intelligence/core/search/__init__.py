@@ -1,3 +1,12 @@
-from personal_intelligence.core.search.hybrid_engine import HybridSearchEngine
+"""
+Search & Retrieval Subsystem for Personal Intelligence.
+"""
 
-__all__ = ["HybridSearchEngine"]
+from personal_intelligence.core.search.hybrid_engine import HybridSearchEngine
+from personal_intelligence.core.search.retriever import PersonalMemoryRetriever, RetrievalItem
+
+__all__ = [
+    "PersonalMemoryRetriever",
+    "RetrievalItem",
+    "HybridSearchEngine",
+]

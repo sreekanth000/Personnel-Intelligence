@@ -280,10 +280,11 @@ class PersonalSignificanceEngine:
                 timestamp=now,
             )
 
-        if prio == "high" or novelty_score >= 0.75 or has_information_gap or (prio == "medium" and len(matching_patterns) > 0):
+        is_high_novelty_actionable = (novelty_score >= 0.75 and (prio not in ("low", "informational", "none") or bool(goals)))
+        if prio == "high" or is_high_novelty_actionable or has_information_gap or (prio == "medium" and len(matching_patterns) > 0):
             if has_information_gap:
                 reasons.append("Unresolved information gap requires investigation")
-            if novelty_score >= 0.75:
+            if is_high_novelty_actionable and novelty_score >= 0.75:
                 reasons.append(f"Elevated novelty score ({novelty_score:.2f})")
             if prio == "high":
                 reasons.append(f"High-priority situation: {situation_type}")
@@ -309,7 +310,7 @@ class PersonalSignificanceEngine:
                 timestamp=now,
             )
 
-        if prio in ("low", "informational", "none") and not has_information_gap and novelty_score < 0.5:
+        if prio in ("low", "informational", "none") and not has_information_gap and not goals:
             return SignificanceAssessment(
                 level=SignificanceLevel.NOT_SIGNIFICANT.value,
                 reasons=["Low urgency routine situation with no active goal impact."],

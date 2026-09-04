@@ -357,10 +357,13 @@ class EpisodeStore:
         impact_metrics: Optional[Dict[str, Any]] = None,
         evidence_event_ids: Optional[List[str]] = None,
         status: Optional[str] = EpisodeStatus.OUTCOME_RECORDED.value,
+        require_evidence: bool = False,
     ) -> Optional[ReasoningEpisode]:
         """
         Records the empirical longitudinal outcome of a recommendation.
         Validates outcome_status against allowed RecommendationResult states.
+        If require_evidence is True, enforces that COMPLETED / PARTIALLY_COMPLETED
+        states must have supporting evidence_event_ids (does not manufacture outcomes).
         """
         existing = self.get_episode(episode_id)
         if existing is None:
@@ -371,6 +374,13 @@ class EpisodeStore:
         out_val = outcome_status.value if isinstance(outcome_status, RecommendationResult) else str(outcome_status).strip().upper()
         if out_val not in valid_states:
             raise ValueError(f"Invalid outcome status '{outcome_status}'. Must be one of {sorted(list(valid_states))}")
+
+        if require_evidence and out_val in (RecommendationResult.COMPLETED.value, RecommendationResult.PARTIALLY_COMPLETED.value):
+            if not evidence_event_ids:
+                raise ValueError(
+                    f"Outcome status '{out_val}' requires supporting observed evidence event IDs. "
+                    "Do not manufacture outcomes without observation evidence."
+                )
 
         record = OutcomeRecord(
             outcome_status=out_val,
@@ -400,6 +410,43 @@ class EpisodeStore:
             return self.get_episode(episode_id)
         finally:
             conn.close()
+
+    def record_evidence_backed_outcome(
+        self,
+        episode_id: str,
+        evidence_event_ids: Optional[List[str]] = None,
+        outcome_status: Union[RecommendationResult, str] = RecommendationResult.COMPLETED.value,
+        evaluation_notes: Optional[str] = None,
+        impact_metrics: Optional[Dict[str, Any]] = None,
+        observed_at: Optional[datetime] = None,
+    ) -> Optional[ReasoningEpisode]:
+        """
+        Records an outcome strictly validated against observed evidence event IDs.
+        If evidence_event_ids is missing or empty, outcome status defaults to UNKNOWN
+        to prevent manufactured outcomes without verified observation backing.
+        """
+        ev_ids = [str(e) for e in (evidence_event_ids or []) if e]
+        if not ev_ids:
+            # Do not manufacture outcomes
+            eff_status = RecommendationResult.UNKNOWN.value
+            notes = (evaluation_notes or "") + " [Outcome evaluated as UNKNOWN: No observed evidence event IDs provided.]"
+            succ = None
+        else:
+            eff_status = outcome_status.value if hasattr(outcome_status, "value") else str(outcome_status).strip().upper()
+            notes = evaluation_notes
+            succ = True if eff_status == RecommendationResult.COMPLETED.value else None
+
+        return self.record_outcome(
+            episode_id=episode_id,
+            outcome_status=eff_status,
+            evaluation_notes=notes.strip() if notes else None,
+            success=succ,
+            observed_at=observed_at,
+            impact_metrics=impact_metrics,
+            evidence_event_ids=ev_ids,
+            require_evidence=False,
+        )
+
 
     def update_outcome(
         self,
@@ -618,9 +665,6 @@ class EpisodeStore:
 
     def list_by_situation(self, situation_id: str, limit: int = 50) -> List[ReasoningEpisode]:
         """Lists reasoning episodes for a specific situation ID ordered by created_at DESC."""
-        if not situation_id:
-            return []
-
         query = "SELECT * FROM reasoning_episodes WHERE situation_id = ? ORDER BY created_at DESC LIMIT ?;"
         conn = self._get_connection()
         try:
@@ -630,3 +674,11 @@ class EpisodeStore:
             return [self._row_to_episode(r) for r in rows]
         finally:
             conn.close()
+
+    def get_latest_for_situation(self, situation_id: str) -> Optional[ReasoningEpisode]:
+        """Retrieves the most recent reasoning episode for a given situation ID."""
+        episodes = self.list_by_situation(situation_id, limit=1)
+        return episodes[0] if episodes else None
+
+    get_episodes = list_recent
+    record_episode = create_episode

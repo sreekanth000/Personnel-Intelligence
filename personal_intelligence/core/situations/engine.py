@@ -1,24 +1,14 @@
 """
 Personal Intelligence Situation Engine.
 
-Synthesizes:
-- Current State (commitments, upcoming events, open issues, recent activity, goals, active situations)
-- Recent Observations
-- Timeline
-- Active Goals
-- Known Patterns
-- Emerging Hypotheses
+Situation Discovery generates domain-agnostic situation candidates from changes, significance, relationships, goals, temporal patterns, and unresolved conditions. Initial implementations may use generic candidate signals such as routine deviation or deadline pressure, but these are implementation heuristics and not a closed situation ontology.
 
-Produces candidate situations across generic categories:
-- possible forgotten commitment
-- upcoming preparation need
-- schedule conflict
-- unresolved issue
-- unusual change (unusual_state / prolonged_activity)
-- goal risk
-- opportunity
-- information gap
-- novel situation
+Produces candidate situations across generic heuristics:
+- unusual_state / prolonged_activity / routine_deviation
+- schedule_conflict / preparation_need
+- unresolved_issue / information_gap
+- possible_goal_risk / potential_deadline_risk
+- novel_situation / opportunity
 
 Does NOT notify the user.
 Does NOT take actions.
@@ -96,7 +86,19 @@ class SituationEngine:
         self.routine_deviation_threshold = routine_deviation_threshold
         self.novelty_threshold = novelty_threshold
         self.goal_engine = goal_engine
+        self._custom_signal_detectors: Dict[str, Any] = {}
 
+    def register_signal_detector(
+        self,
+        name: str,
+        detector_fn: Any,
+    ) -> None:
+        """
+        Registers a generic candidate signal detector without requiring domain-specific agents.
+        Detector receives: (current_state, timeline, goals, recent_observations, context_graph, ref_dt)
+        Returns a list of Situation instances.
+        """
+        self._custom_signal_detectors[name] = detector_fn
 
     def evaluate(
         self,
@@ -108,6 +110,7 @@ class SituationEngine:
         emerging_hypotheses: Optional[List[Pattern]] = None,
         novelty_result: Optional[NoveltyResult] = None,
         reference_time: Optional[datetime] = None,
+        context_graph: Optional[Any] = None,
     ) -> SituationEvaluation:
         """
         Executes the 4-stage SituationEngine synthesis:
@@ -180,6 +183,64 @@ class SituationEngine:
         )
         candidates.extend(discovered_novel_sits)
 
+        # =========================================================================
+        # Stage 5: Custom Registered Signal Detectors (Domain-Agnostic Extensibility)
+        # =========================================================================
+        for detector_name, detector_fn in self._custom_signal_detectors.items():
+            try:
+                custom_sits = detector_fn(
+                    current_state=current_state,
+                    timeline=timeline,
+                    goals=active_goals,
+                    recent_observations=obs_list,
+                    context_graph=context_graph,
+                    ref_dt=ref_dt,
+                )
+                if custom_sits:
+                    candidates.extend(custom_sits)
+            except Exception as ex:
+                logger.warning("Custom signal detector '%s' error: %s", detector_name, ex)
+
+        # =========================================================================
+        # Stage 6: Context Graph Traversal & Enrichment
+        # =========================================================================
+        if context_graph is not None:
+            for sit in candidates:
+                ents = sit.context.get("primary_entity_ids") or sit.context.get("entity_ids") or []
+                for ent_id in ents:
+                    try:
+                        if hasattr(context_graph, "get_related_goals"):
+                            for g in context_graph.get_related_goals(ent_id):
+                                gid = g.get("id") if isinstance(g, dict) else getattr(g, "id", str(g))
+                                if gid and gid not in sit.related_goals:
+                                    sit.related_goals.append(gid)
+                        if hasattr(context_graph, "get_related_entities"):
+                            for rel_ent in context_graph.get_related_entities(ent_id):
+                                re_id = rel_ent.get("id") if isinstance(rel_ent, dict) else str(rel_ent)
+                                sit.context.setdefault("related_entities", [])
+                                if re_id and re_id not in sit.context["related_entities"]:
+                                    sit.context["related_entities"].append(re_id)
+                    except Exception:
+                        pass
+
+        # =========================================================================
+        # Stage 7: Deterministic Deduplication
+        # =========================================================================
+        seen_identities: Set[str] = set()
+        deduped_candidates: List[Situation] = []
+        for cand in candidates:
+            ident = cand.get_deterministic_identity()
+            if ident not in seen_identities:
+                seen_identities.add(ident)
+                deduped_candidates.append(cand)
+            else:
+                ignored_signals.append({
+                    "signal_type": cand.type,
+                    "reason": "duplicate_candidate_identity",
+                    "identity": ident,
+                })
+        candidates = deduped_candidates
+
         # Consolidate evidence
         for c in candidates:
             for ev in c.evidence:
@@ -225,7 +286,8 @@ class SituationEngine:
                 if commit.provenance and commit.provenance.source_observation_id:
                     evidence.append(commit.provenance.source_observation_id)
 
-                priority = SituationPriority.HIGH.value if is_overdue else SituationPriority.MEDIUM.value
+                is_imminent = commit.due_at and (commit.due_at - ref_dt) <= timedelta(hours=6)
+                priority = SituationPriority.HIGH.value if (is_overdue or is_imminent or getattr(commit, "priority", "") in ("critical", "high")) else SituationPriority.MEDIUM.value
                 novelty = 0.4 if is_overdue else 0.2
 
                 situations.append(
@@ -542,6 +604,13 @@ class SituationEngine:
                 computed_feats["recent_activity_duration"] = dur
 
         dur = computed_feats.get("recent_activity_duration", 0.0)
+        if dur == 0.0 and timeline and timeline.events:
+            for ev in timeline.events:
+                p = ev.payload if isinstance(ev.payload, dict) else {}
+                if "duration_minutes" in p and isinstance(p["duration_minutes"], (int, float)):
+                    if p["duration_minutes"] >= self.prolonged_activity_threshold:
+                        dur = max(dur, float(p["duration_minutes"]))
+
         if isinstance(dur, (int, float)) and dur >= self.prolonged_activity_threshold:
             evidence = []
             if timeline and timeline.events:
@@ -610,6 +679,13 @@ class SituationEngine:
                     risk_factors.append(f"Blocked by {len(critical_issues)} high-severity issue(s)")
                     evidence.extend([i.id for i in critical_issues])
 
+                # Check observations for blocker/outage signals
+                for obs in observations:
+                    obs_str = f"{obs.event_type} {str(obs.payload)}".lower()
+                    if any(w in obs_str for w in ["blocked", "outage", "failure", "failed", "pipeline_blocked"]):
+                        risk_factors.append(f"Observation blocker signal: {obs.event_type}")
+                        evidence.append(obs.id)
+
                 if has_sleep_deficit and any(k in goal.name.lower() for k in ["run", "workout", "marathon", "training", "fitness"]):
                     risk_factors.append("Acute sleep deficit conflicts with high-intensity training goal")
 
@@ -624,12 +700,14 @@ class SituationEngine:
                         risk_factors.append(f"Goal is overdue past deadline ({format_iso8601(goal.deadline)})")
 
                 if risk_factors:
+                    prio = SituationPriority.HIGH.value
+                    nov_score = float(novelty_result.metadata.get("divergence_score", 0.0) if novelty_result and hasattr(novelty_result, "metadata") and isinstance(novelty_result.metadata, dict) else 0.0)
                     situations.append(
                         Situation(
                             id=f"sit_goal_risk_{uuid.uuid4().hex[:8]}",
                             type="goal_risk",
-                            priority=SituationPriority.HIGH.value,
-                            novelty=0.65,
+                            priority=prio,
+                            novelty=nov_score,
                             status=SituationStatus.OPEN.value,
                             information_required=False,
                             context={

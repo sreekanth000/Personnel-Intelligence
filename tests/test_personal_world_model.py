@@ -232,7 +232,7 @@ class TestPersonalWorldModel(unittest.TestCase):
         # Invalid observation source rejected
         with self.assertRaises(EventValidationError):
             self.world_model.record_observation(
-                source="unsupported_external_api",
+                source="invalid source with spaces and symbols #$@!",
                 source_id="id123",
                 timestamp=self.now,
                 observation_type="email_received",

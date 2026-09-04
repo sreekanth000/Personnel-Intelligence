@@ -1,5 +1,6 @@
 """
 Predictive Processing & Expectation Engine (Karl Friston's Free Energy Principle).
+[EXPERIMENTAL / FUTURE RESEARCH - DEFERRED FROM V1]
 
 Generates top-down expectation states for user location, activity, cognitive load, and schedule,
 and computes Prediction Error (delta) against real-time incoming observations.
@@ -13,6 +14,7 @@ from typing import Any, Dict, List, Optional
 import uuid
 
 from personal_intelligence.core.events.models import Event, ensure_timezone_aware, format_iso8601
+from personal_intelligence.core.world.expectations import ExpectationProvider
 from personal_intelligence.storage.db import DatabaseManager
 
 logger = logging.getLogger(__name__)
@@ -39,7 +41,7 @@ class ExpectedState:
         }
 
 
-class PredictiveProcessingEngine:
+class PredictiveProcessingEngine(ExpectationProvider):
     """Calculates top-down expectations and prediction error deltas for incoming observations."""
 
     def __init__(self, db_manager: Optional[DatabaseManager] = None) -> None:
@@ -109,6 +111,10 @@ class PredictiveProcessingEngine:
                     )
         finally:
             conn.close()
+
+    def get_expected_baseline(self, dt: Optional[datetime] = None) -> Dict[str, Any]:
+        """Implements ExpectationProvider interface."""
+        return self.get_expected_state(dt).to_dict()
 
     def calculate_prediction_error(
         self, actual_event: Event, expected: Optional[ExpectedState] = None

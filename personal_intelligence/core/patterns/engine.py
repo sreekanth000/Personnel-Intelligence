@@ -851,9 +851,10 @@ class LearningEngine:
 
         world_pats = self.discover_world_patterns(ev_list, timeline=timeline)
         behavioral_pats = self.discover_behavioral_patterns(ev_list, timeline=timeline, episodes=ep_list)
+        recurrence_pats = self.discover_situation_recurrence_patterns(ep_list)
+        behavioral_pats.extend(recurrence_pats)
         interaction_pats = self.discover_interaction_patterns(ep_list)
         decayed_pats = self.apply_recency_decay(as_of=ref_dt)
-
 
         return {
             "world_patterns": world_pats,
@@ -861,6 +862,51 @@ class LearningEngine:
             "interaction_patterns": interaction_pats,
             "decayed_patterns": decayed_pats,
         }
+
+    def discover_situation_recurrence_patterns(
+        self,
+        episodes: List[ReasoningEpisode],
+    ) -> List[Pattern]:
+        """
+        Discovers empirical patterns from repeated situations, outcomes, and user responses.
+        Strictly observes recurring correlation without causal claims or modifying historical observations.
+        """
+        discovered: List[Pattern] = []
+        if not episodes:
+            return discovered
+
+        by_situation_type: Dict[str, List[ReasoningEpisode]] = defaultdict(list)
+        for ep in episodes:
+            sit_type = None
+            if isinstance(ep.context_snapshot, dict):
+                sit_type = ep.context_snapshot.get("category") or ep.context_snapshot.get("situation_type")
+            if not sit_type and ep.hermes_task:
+                sit_type = ep.hermes_task
+            if not sit_type and ep.situation_id:
+                sit_type = ep.situation_id
+            sit_type = sit_type or "general_situation"
+            by_situation_type[str(sit_type)].append(ep)
+
+        for s_type, ep_list in by_situation_type.items():
+            if len(ep_list) >= 2:
+                desc = f"Repeated situation of type '{s_type}' frequently recurs under similar temporal and contextual conditions."
+                clean_desc = self._sanitize_non_causal_phrasing(desc)
+
+                pat = self._upsert_pattern(
+                    description=clean_desc,
+                    pattern_type=PatternType.BEHAVIORAL_PATTERN,
+                    supporting_episodes=[e.id for e in ep_list],
+                    first_seen=min(e.created_at for e in ep_list),
+                    last_seen=max(e.created_at for e in ep_list),
+                    metadata={
+                        "dimension": "situation_recurrence",
+                        "situation_type": s_type,
+                        "recurrence_count": len(ep_list),
+                    },
+                )
+                discovered.append(pat)
+
+        return discovered
 
     def scan_intervention_preferences(
         self,

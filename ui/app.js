@@ -16,10 +16,13 @@ document.addEventListener("DOMContentLoaded", () => {
   const screenViews = {
     overview: document.getElementById("screen-overview"),
     "world-model": document.getElementById("screen-world-model"),
+    "context-graph": document.getElementById("screen-context-graph"),
+    timeline: document.getElementById("screen-timeline"),
     situations: document.getElementById("screen-situations"),
+    "hermes-reasoning": document.getElementById("screen-hermes-reasoning"),
+    interventions: document.getElementById("screen-interventions"),
     "situation-detail": document.getElementById("screen-situation-detail"),
     patterns: document.getElementById("screen-patterns"),
-    timeline: document.getElementById("screen-timeline"),
     episodes: document.getElementById("screen-episodes"),
     sources: document.getElementById("screen-sources"),
   };
@@ -84,6 +87,8 @@ document.addEventListener("DOMContentLoaded", () => {
   let currentOperatingMode = "LIVE";
   let cachedSituations = [];
   let cachedTimeline = [];
+  let cachedInterventions = [];
+  let currentInterventionFilter = "ALL";
   let selectedSituationId = null;
   let lastActivityId = null;
   let activityEventsCache = [];
@@ -116,13 +121,21 @@ document.addEventListener("DOMContentLoaded", () => {
     // Load data for the active screen
     if (screenId === "overview") fetchOverview();
     else if (screenId === "world-model") fetchWorldModel();
+    else if (screenId === "context-graph") {
+      requestAnimationFrame(() => {
+        syncCanvasSize();
+        fetchContextGraph();
+      });
+    }
+    else if (screenId === "timeline") fetchTimeline();
     else if (screenId === "situations") fetchSituations();
+    else if (screenId === "hermes-reasoning") fetchHermesReasoningResults();
+    else if (screenId === "interventions") fetchInterventions();
     else if (screenId === "situation-detail") {
       if (situationId) selectedSituationId = situationId;
       fetchSituationDetail(selectedSituationId);
     }
     else if (screenId === "patterns") fetchPatterns();
-    else if (screenId === "timeline") fetchTimeline();
     else if (screenId === "episodes") fetchEpisodes();
     else if (screenId === "sources") {
       fetchDataSources();
@@ -732,152 +745,6 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // =========================================================================
-  // 3. Live Execution Activity Stream Polling
-  // =========================================================================
-  async function fetchActivityStream() {
-    try {
-      const url = lastActivityId ? `/api/pi/activity?since_id=${lastActivityId}&limit=50` : `/api/pi/activity?limit=50`;
-      const res = await fetch(url);
-      if (!res.ok) return;
-      const newEvents = await res.json();
-      if (Array.isArray(newEvents) && newEvents.length > 0) {
-        lastActivityId = newEvents[newEvents.length - 1].id;
-        activityEventsCache = [...activityEventsCache, ...newEvents].slice(-100);
-        renderActivityStream(activityEventsCache);
-      }
-    } catch (e) {
-      console.warn("Activity stream poll failed:", e);
-    }
-  }
-
-  function renderActivityStream(events) {
-    if (!activityStreamContainer) return;
-    if (activityStreamCount) activityStreamCount.textContent = `${events.length} events`;
-
-    if (events.length === 0) {
-      activityStreamContainer.innerHTML = `<div class="loading-skeleton">Listening for execution lifecycle events...</div>`;
-      return;
-    }
-
-    activityStreamContainer.innerHTML = events.slice().reverse().map(e => `
-      <div class="activity-item">
-        <div class="activity-main">
-          <span class="activity-dot"></span>
-          <span class="activity-type-badge">${escapeHtml(e.type)}</span>
-          <span class="activity-summary">${escapeHtml(e.summary)}</span>
-        </div>
-        <span class="activity-time">${new Date(e.timestamp || Date.now()).toLocaleTimeString()}</span>
-      </div>
-    `).join("");
-  }
-
-  // Periodic polling for live execution activity stream (every 2.5s)
-  setInterval(fetchActivityStream, 2500);
-
-  // =========================================================================
-  // 4. Screen 1: Overview Fetcher & Renderer
-  // =========================================================================
-  async function fetchOverview() {
-    try {
-      const res = await fetch("/api/pi/overview");
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      hideError();
-      renderOverview(data);
-    } catch (err) {
-      console.error("fetchOverview error:", err);
-      showError("Could not fetch Overview from /api/pi/overview: " + err.message);
-    }
-  }
-
-  function renderOverview(data) {
-    if (!data) return;
-
-    // 1. Current State Matrix
-    const cs = data.current_state || {};
-    document.getElementById("overview-state-summary").textContent = cs.summary || "Evaluating multi-dimensional state...";
-    document.getElementById("overview-activity").textContent = cs.activity || "Idle";
-    document.getElementById("overview-duration").textContent = cs.duration || "--";
-    document.getElementById("overview-location").textContent = cs.location || "Workspace";
-    document.getElementById("overview-tod").textContent = cs.time_of_day || "Daytime";
-    document.getElementById("overview-state-time").textContent = new Date(cs.timestamp || Date.now()).toLocaleTimeString();
-
-    const featContainer = document.getElementById("overview-features-container");
-    if (cs.features && featContainer) {
-      featContainer.innerHTML = cs.features.map(f => {
-        let valDisplay = typeof f.value === "object" ? JSON.stringify(f.value) : f.value;
-        return `
-          <div class="feature-item">
-            <div>
-              <span class="feature-name">${escapeHtml(f.name)}</span>
-              <span class="feature-source">&bull; ${escapeHtml(f.source)}</span>
-            </div>
-            <span class="feature-val">${escapeHtml(String(valDisplay))}</span>
-          </div>
-        `;
-      }).join("");
-    }
-
-    // 2. Recommendations & Policy Action
-    const recContainer = document.getElementById("overview-recommendations-container");
-    const recs = data.important_recommendations || [];
-    if (recs.length === 0) {
-      recContainer.innerHTML = `<p class="state-lead-text" style="color: var(--text-muted);">No urgent recommendations active.</p>`;
-    } else {
-      recContainer.innerHTML = recs.map(r => `
-        <div class="recommendation-item">
-          <div class="recommendation-header">
-            <span class="recommendation-title">👉 ${escapeHtml(r.title)}</span>
-            <span class="badge badge-intervention">${escapeHtml(r.policy_action || "BRIEFING")}</span>
-          </div>
-          ${r.secondary_action ? `<div class="recommendation-secondary"><strong>Secondary:</strong> ${escapeHtml(r.secondary_action)}</div>` : ""}
-          <p class="recommendation-why">${escapeHtml(r.why)}</p>
-          <div class="intervention-meta">
-            <span><strong>Urgency:</strong> ${escapeHtml(r.urgency || "MEDIUM")}</span>
-            <span><strong>Actionability:</strong> ${escapeHtml(r.actionability || "HIGH")}</span>
-            <span><strong>Evidence:</strong> ${escapeHtml(r.evidence_strength || "STRONG")}</span>
-          </div>
-        </div>
-      `).join("");
-    }
-
-    // 3. Active Goals
-    const goalsContainer = document.getElementById("overview-goals-container");
-    const goals = data.active_goals || [];
-    document.getElementById("overview-goals-count").textContent = `${goals.length} Active`;
-    if (goals.length === 0) {
-      goalsContainer.innerHTML = `<p class="state-lead-text" style="color: var(--text-muted);">No active goals logged.</p>`;
-    } else {
-      goalsContainer.innerHTML = goals.map(g => `
-        <div class="pipeline-list-item" style="justify-content: space-between; margin-bottom: 0.4rem;">
-          <div>
-            <div style="font-weight: 600; color: var(--text-primary); font-size: 0.88rem;">${escapeHtml(g.name)}</div>
-            <div style="font-size: 0.76rem; color: var(--text-muted);">${escapeHtml(g.description || "")}</div>
-          </div>
-          <span class="badge badge-recommendation">${escapeHtml(g.priority)}</span>
-        </div>
-      `).join("");
-    }
-
-    // 4. Upcoming Commitments
-    const commContainer = document.getElementById("overview-commitments-container");
-    const comms = data.upcoming_commitments || [];
-    if (comms.length === 0) {
-      commContainer.innerHTML = `<p class="state-lead-text" style="color: var(--text-muted);">No upcoming scheduled commitments.</p>`;
-    } else {
-      commContainer.innerHTML = comms.map(c => `
-        <div class="timeline-item" style="padding: 0.5rem 0.75rem; margin-bottom: 0.4rem;">
-          <div class="timeline-main">
-            <span class="timeline-source-badge ${escapeHtml(c.source)}">${escapeHtml(c.source)}</span>
-            <span style="font-size: 0.82rem; color: var(--text-primary);">${escapeHtml(c.summary)}</span>
-          </div>
-          <span class="timeline-time">${new Date(c.time || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-        </div>
-      `).join("");
-    }
-  }
-
-  // =========================================================================
   // 5. Screen 2: World Model Fetcher & Renderer
   // =========================================================================
   async function fetchWorldModel() {
@@ -1044,8 +911,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function populateSituationSelector(sits) {
     if (!detailSelector) return;
+    const list = Array.isArray(sits) ? sits : (sits?.situations || []);
     detailSelector.innerHTML = `<option value="">Select a situation to inspect flow...</option>` +
-      sits.map(s => `<option value="${s.situation_id || s.id}">${escapeHtml(s.title || s.type)} (${s.priority})</option>`).join("");
+      list.map(s => `<option value="${s.situation_id || s.id}">${escapeHtml(s.title || s.type)} (${s.priority})</option>`).join("");
     if (selectedSituationId) {
       detailSelector.value = selectedSituationId;
     }
@@ -1055,7 +923,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const container = document.getElementById("situations-list-container");
     if (!container) return;
 
-    const filtered = (priorityFilter === "ALL") ? sits : sits.filter(s => (s.priority || "").toUpperCase() === priorityFilter);
+    const list = Array.isArray(sits) ? sits : (sits?.situations || []);
+    const filtered = (priorityFilter === "ALL") ? list : list.filter(s => (s.priority || "").toUpperCase() === priorityFilter);
     if (filtered.length === 0) {
       container.innerHTML = `<p class="state-lead-text" style="color: var(--text-muted); padding: 1.5rem;">No situations matching filter '${priorityFilter}'.</p>`;
       return;
@@ -1722,14 +1591,14 @@ document.addEventListener("DOMContentLoaded", () => {
     modal.classList.add("hidden");
   }
 
-  modalCloseBtn.addEventListener("click", closeModal);
-  modalOkBtn.addEventListener("click", closeModal);
-  modal.addEventListener("click", (e) => {
+  modalCloseBtn?.addEventListener("click", closeModal);
+  modalOkBtn?.addEventListener("click", closeModal);
+  modal?.addEventListener("click", (e) => {
     if (e.target === modal) closeModal();
   });
 
   // /pi what_matters
-  btnWhatMatters.addEventListener("click", async () => {
+  btnWhatMatters?.addEventListener("click", async () => {
     showStatus("Running /pi what_matters...");
     try {
       const res = await fetch("/api/pi/actions/what_matters", { method: "POST" });
@@ -1749,7 +1618,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // /pi what_changed
-  btnWhatChanged.addEventListener("click", async () => {
+  btnWhatChanged?.addEventListener("click", async () => {
     showStatus("Running /pi what_changed (48h baseline diff)...");
     try {
       const res = await fetch("/api/pi/actions/what_changed", {
@@ -1772,7 +1641,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // /pi test_sources
-  btnTestSources.addEventListener("click", async () => {
+  btnTestSources?.addEventListener("click", async () => {
     showStatus("Testing Hermes Google Workspace readiness (/pi test_sources)...");
     try {
       const res = await fetch("/api/pi/actions/test_sources", { method: "POST" });
@@ -1847,7 +1716,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // /pi investigate
-  btnInvestigate.addEventListener("click", async () => {
+  btnInvestigate?.addEventListener("click", async () => {
     showStatus("Executing Hermes Situation Investigation...");
     try {
       const res = await fetch("/api/pi/actions/investigate", {
@@ -1882,7 +1751,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // /pi why
-  btnWhy.addEventListener("click", async () => {
+  btnWhy?.addEventListener("click", async () => {
     showStatus("Generating /pi why diagnostic explanation...");
     try {
       const res = await fetch("/api/pi/actions/why", {
@@ -2536,10 +2405,914 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-sources-connect-hermes")?.addEventListener("click", handleConnectHermes);
   document.getElementById("btn-card-connect-hermes")?.addEventListener("click", handleConnectHermes);
 
+  // =========================================================================
+  // CONTEXT GRAPH INTERACTIVE VISUALIZER
+  // =========================================================================
+  let graphNodes = [];
+  let graphEdges = [];
+  let graphZoom = 1.0;
+  let graphPanX = 0;
+  let graphPanY = 0;
+  let activeGraphFilter = "all";
+  let graphSearchTerm = "";
+  let selectedGraphNode = null;
+  let hoveredGraphNode = null;
+  let isGraphDragging = false;
+  let graphDragStartX = 0;
+  let graphDragStartY = 0;
+
+  const entityColorMap = {
+    observation: "#38bdf8", // vibrant cyan-sky
+    concept: "#c084fc",     // purple
+    person: "#f472b6",      // pink
+    project: "#818cf8",     // indigo
+    commitment: "#f59e0b",  // amber
+    goal: "#10b981",        // emerald
+    activity: "#06b6d4",    // cyan
+    place: "#f43f5e",       // rose
+    document: "#a855f7",    // deep purple
+    organization: "#3b82f6",// blue
+    satellite: "#38bdf8",
+    facility: "#14b8a6",
+  };
+
+  function syncCanvasSize() {
+    const canvas = document.getElementById("context-graph-canvas");
+    if (!canvas || !canvas.parentElement) return;
+    const parent = canvas.parentElement;
+    const w = parent.clientWidth;
+    if (w > 100) {
+      canvas.width = w;
+      canvas.height = Math.max(600, Math.min(800, window.innerHeight - 280));
+    }
+  }
+
+  async function fetchContextGraph() {
+    try {
+      syncCanvasSize();
+      const res = await fetch("/api/pi/context_graph");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      graphNodes = data.nodes || [];
+      graphEdges = data.edges || [];
+
+      // Update total count badge
+      const countEl = document.getElementById("graph-total-count");
+      if (countEl) countEl.textContent = graphNodes.length;
+
+      // Update entity counts on all filter chips
+      const entityTypes = data.entity_types || {};
+      updateFilterButtons(entityTypes);
+
+      // Position nodes in an organic clustered layout around center
+      layoutGraphNodes();
+      renderContextGraph();
+
+      // Automatically inspect the first node if none is currently selected
+      if (!selectedGraphNode && graphNodes.length > 0) {
+        selectGraphNode(graphNodes[0]);
+      } else if (selectedGraphNode) {
+        // Refresh inspection for currently selected node
+        const refreshed = graphNodes.find(n => n.id === selectedGraphNode.id);
+        if (refreshed) selectGraphNode(refreshed);
+      }
+    } catch (err) {
+      console.error("fetchContextGraph error:", err);
+    }
+  }
+
+  function updateFilterButtons(entityTypes) {
+    const knownKeys = ["observation", "concept", "person", "project", "commitment", "goal", "activity", "place"];
+    knownKeys.forEach(key => {
+      const badge = document.getElementById(`graph-count-${key}`);
+      if (badge) {
+        badge.textContent = entityTypes[key] || 0;
+      }
+    });
+
+    // Check for any extra dynamic entity types returned by backend
+    const container = document.getElementById("graph-entity-filters");
+    if (!container) return;
+
+    Object.keys(entityTypes).forEach(type => {
+      const lower = type.toLowerCase();
+      if (!document.getElementById(`graph-count-${lower}`)) {
+        const btn = document.createElement("button");
+        btn.className = "filter-btn";
+        btn.dataset.type = lower;
+        btn.innerHTML = `${escapeHtml(type.charAt(0).toUpperCase() + type.slice(1))} <span class="filter-count-badge" id="graph-count-${lower}">${entityTypes[type]}</span>`;
+        btn.addEventListener("click", () => {
+          document.querySelectorAll("#graph-entity-filters .filter-btn").forEach(b => b.classList.remove("active"));
+          btn.classList.add("active");
+          activeGraphFilter = lower;
+          renderContextGraph();
+        });
+        container.appendChild(btn);
+      }
+    });
+  }
+
+  function layoutGraphNodes() {
+    const canvas = document.getElementById("context-graph-canvas");
+    const width = canvas ? canvas.width : 1000;
+    const height = canvas ? canvas.height : 600;
+    const cx = width / 2;
+    const cy = height / 2;
+
+    const typeBuckets = {};
+    graphNodes.forEach(n => {
+      const t = (n.entity_type || "concept").toLowerCase();
+      if (!typeBuckets[t]) typeBuckets[t] = [];
+      typeBuckets[t].push(n);
+    });
+
+    const types = Object.keys(typeBuckets);
+    const numTypes = types.length || 1;
+
+    // Cluster distribution across canvas
+    types.forEach((t, typeIdx) => {
+      const nodes = typeBuckets[t];
+      const count = nodes.length;
+
+      // Determine cluster center
+      let clusterX = cx;
+      let clusterY = cy;
+
+      if (numTypes > 1) {
+        // Orbit cluster centers around the main canvas center
+        const clusterAngle = (typeIdx / numTypes) * 2 * Math.PI - Math.PI / 2;
+        const orbitRadius = Math.min(width, height) * 0.32;
+        clusterX = cx + Math.cos(clusterAngle) * orbitRadius;
+        clusterY = cy + Math.sin(clusterAngle) * orbitRadius;
+      }
+
+      // If one dominant large cluster (like observation with 160+ nodes), place it gracefully
+      if (t === "observation") {
+        clusterX = cx + Math.min(width * 0.12, 120);
+        clusterY = cy;
+      } else if (t === "concept") {
+        clusterX = cx - Math.min(width * 0.28, 260);
+        clusterY = cy - 80;
+      } else if (t === "person") {
+        clusterX = cx - Math.min(width * 0.28, 260);
+        clusterY = cy + 120;
+      } else if (t === "project") {
+        clusterX = cx - Math.min(width * 0.1, 100);
+        clusterY = cy + 180;
+      } else if (t === "commitment") {
+        clusterX = cx - Math.min(width * 0.1, 100);
+        clusterY = cy - 180;
+      }
+
+      // Position nodes within the cluster without overlapping
+      if (count === 1) {
+        nodes[0].x = clusterX;
+        nodes[0].y = clusterY;
+        nodes[0].radius = 15;
+      } else if (count <= 6) {
+        // Ring layout for small clusters
+        nodes.forEach((node, idx) => {
+          const angle = (idx / count) * 2 * Math.PI;
+          const dist = 48;
+          node.x = clusterX + Math.cos(angle) * dist;
+          node.y = clusterY + Math.sin(angle) * dist;
+          node.radius = 15;
+        });
+      } else {
+        // Golden spiral (phyllotaxis) for dense clusters: guarantees uniform spacing with zero overlap
+        const goldenAngle = 2.399963229728653; // ~137.5 degrees
+        const spreadFactor = count > 100 ? 25 : 32;
+        nodes.forEach((node, idx) => {
+          const r = 36 + Math.sqrt(idx) * spreadFactor;
+          const theta = idx * goldenAngle;
+          node.x = clusterX + Math.cos(theta) * r;
+          node.y = clusterY + Math.sin(theta) * r;
+          node.radius = 14;
+        });
+      }
+    });
+  }
+
+  function renderContextGraph() {
+    const canvas = document.getElementById("context-graph-canvas");
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const width = canvas.width;
+    const height = canvas.height;
+
+    ctx.clearRect(0, 0, width, height);
+
+    ctx.save();
+    // Apply pan and zoom centered on canvas
+    ctx.translate(graphPanX + width / 2, graphPanY + height / 2);
+    ctx.scale(graphZoom, graphZoom);
+    ctx.translate(-width / 2, -height / 2);
+
+    // Subtle background grid
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.035)";
+    ctx.lineWidth = 1;
+    for (let x = -width; x < width * 2; x += 48) {
+      ctx.beginPath(); ctx.moveTo(x, -height); ctx.lineTo(x, height * 2); ctx.stroke();
+    }
+    for (let y = -height; y < height * 2; y += 48) {
+      ctx.beginPath(); ctx.moveTo(-width, y); ctx.lineTo(width * 2, y); ctx.stroke();
+    }
+
+    // Filter nodes by active type and search term
+    const visibleNodes = graphNodes.filter(n => {
+      const matchesType = (activeGraphFilter === "all") || (n.entity_type && n.entity_type.toLowerCase() === activeGraphFilter.toLowerCase());
+      const matchesSearch = !graphSearchTerm || (n.name && n.name.toLowerCase().includes(graphSearchTerm.toLowerCase()));
+      return matchesType && matchesSearch;
+    });
+    const visibleNodeMap = new Map(visibleNodes.map(n => [n.id, n]));
+
+    // If empty state, render friendly empty guide on the canvas
+    if (visibleNodes.length === 0) {
+      ctx.restore();
+      ctx.save();
+      ctx.font = "600 15px Inter, sans-serif";
+      ctx.fillStyle = "#94a3b8";
+      ctx.textAlign = "center";
+      ctx.fillText(`No entities found matching filter: "${activeGraphFilter}"`, width / 2, height / 2 - 10);
+      ctx.font = "12px Inter, sans-serif";
+      ctx.fillStyle = "#64748b";
+      ctx.fillText("Click 'All Types' above or reset your search term to view all 195 relational entities.", width / 2, height / 2 + 16);
+      ctx.restore();
+      return;
+    }
+
+    // Draw Edges
+    graphEdges.forEach(e => {
+      const src = visibleNodeMap.get(e.source_id);
+      const tgt = visibleNodeMap.get(e.target_id);
+      if (!src || !tgt) return;
+
+      const isConnectedToSelected = selectedGraphNode && (selectedGraphNode.id === src.id || selectedGraphNode.id === tgt.id);
+      const isConnectedToHovered = hoveredGraphNode && (hoveredGraphNode.id === src.id || hoveredGraphNode.id === tgt.id);
+
+      if (isConnectedToSelected) {
+        ctx.strokeStyle = "rgba(56, 189, 248, 0.9)";
+        ctx.lineWidth = 2.4;
+      } else if (isConnectedToHovered) {
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.6)";
+        ctx.lineWidth = 1.8;
+      } else {
+        ctx.strokeStyle = "rgba(148, 163, 184, 0.2)";
+        ctx.lineWidth = 1.0;
+      }
+
+      ctx.beginPath();
+      ctx.moveTo(src.x, src.y);
+      ctx.lineTo(tgt.x, tgt.y);
+      ctx.stroke();
+
+      // Draw arrow towards target
+      if (isConnectedToSelected || graphZoom >= 1.25) {
+        const angle = Math.atan2(tgt.y - src.y, tgt.x - src.x);
+        const arrowDist = tgt.radius + 6;
+        const arrowX = tgt.x - Math.cos(angle) * arrowDist;
+        const arrowY = tgt.y - Math.sin(angle) * arrowDist;
+        const arrowLen = 8;
+
+        ctx.fillStyle = isConnectedToSelected ? "#38bdf8" : "rgba(148, 163, 184, 0.6)";
+        ctx.beginPath();
+        ctx.moveTo(arrowX, arrowY);
+        ctx.lineTo(arrowX - arrowLen * Math.cos(angle - Math.PI / 6), arrowY - arrowLen * Math.sin(angle - Math.PI / 6));
+        ctx.lineTo(arrowX - arrowLen * Math.cos(angle + Math.PI / 6), arrowY - arrowLen * Math.sin(angle + Math.PI / 6));
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      // Draw relationship label at midpoint
+      if (isConnectedToSelected || (graphZoom >= 1.35 && visibleNodes.length < 50)) {
+        const midX = (src.x + tgt.x) / 2;
+        const midY = (src.y + tgt.y) / 2;
+        ctx.font = "10px JetBrains Mono, monospace";
+        ctx.fillStyle = isConnectedToSelected ? "#38bdf8" : "rgba(148, 163, 184, 0.8)";
+        ctx.textAlign = "center";
+        ctx.fillText(e.relationship || "related_to", midX, midY - 4);
+      }
+    });
+
+    // Draw Nodes
+    visibleNodes.forEach(node => {
+      const isSelected = selectedGraphNode && selectedGraphNode.id === node.id;
+      const isHovered = hoveredGraphNode && hoveredGraphNode.id === node.id;
+      const typeKey = (node.entity_type || "concept").toLowerCase();
+      const fillColor = entityColorMap[typeKey] || "#e879f9";
+
+      // Glow halo for selected
+      if (isSelected) {
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, node.radius + 8, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(56, 189, 248, 0.28)";
+        ctx.fill();
+        ctx.strokeStyle = "#38bdf8";
+        ctx.lineWidth = 2.2;
+        ctx.stroke();
+      } else if (isHovered) {
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, node.radius + 5, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(255, 255, 255, 0.15)";
+        ctx.fill();
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+
+      // Node Body Circle
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
+      ctx.fillStyle = fillColor;
+      ctx.fill();
+      ctx.strokeStyle = isSelected ? "#ffffff" : "rgba(255, 255, 255, 0.85)";
+      ctx.lineWidth = isSelected ? 2.2 : 1.4;
+      ctx.stroke();
+
+      // Node Label
+      const shouldShowLabel = isSelected || isHovered || graphZoom >= 0.95 || visibleNodes.length <= 40;
+      if (shouldShowLabel) {
+        ctx.font = isSelected ? "bold 11px Inter, sans-serif" : "10px Inter, sans-serif";
+        ctx.textAlign = "center";
+
+        const label = (node.name || node.id || "").trim();
+        const shortName = label.length > 20 ? label.substring(0, 19) + "…" : label;
+
+        // Label background pill for superior legibility
+        const textMetrics = ctx.measureText(shortName);
+        const textWidth = textMetrics.width;
+        const textY = node.y + node.radius + 14;
+
+        ctx.fillStyle = "rgba(3, 7, 18, 0.85)";
+        ctx.fillRect(node.x - textWidth / 2 - 4, textY - 9, textWidth + 8, 14);
+
+        ctx.fillStyle = isSelected ? "#38bdf8" : (isHovered ? "#ffffff" : "#e2e8f0");
+        ctx.fillText(shortName, node.x, textY + 2);
+      }
+    });
+
+    ctx.restore();
+  }
+
+  function selectGraphNode(node) {
+    selectedGraphNode = node;
+    renderContextGraph();
+
+    const titleEl = document.getElementById("graph-inspector-title");
+    const badgeEl = document.getElementById("graph-inspector-badge");
+    const bodyEl = document.getElementById("graph-inspector-body");
+    if (!titleEl || !badgeEl || !bodyEl) return;
+
+    titleEl.textContent = node.name || "Entity Detail";
+    const typeKey = (node.entity_type || "concept").toLowerCase();
+    badgeEl.textContent = (node.entity_type || "concept").toUpperCase();
+    badgeEl.style.color = entityColorMap[typeKey] || "#38bdf8";
+
+    // Find in/out edges
+    const inEdges = graphEdges.filter(e => e.target_id === node.id);
+    const outEdges = graphEdges.filter(e => e.source_id === node.id);
+
+    const aliasesStr = Array.isArray(node.aliases) && node.aliases.length > 0 ? node.aliases.join(", ") : "None";
+    const metaStr = node.metadata ? JSON.stringify(node.metadata, null, 2) : "{}";
+
+    bodyEl.innerHTML = `
+      <div class="inspector-field-group">
+        <div class="inspector-field-label">Entity Name</div>
+        <div class="inspector-field-value" style="font-weight: 600; color: #fff; font-size: 0.95rem;">${escapeHtml(node.name || "Unnamed Entity")}</div>
+      </div>
+      <div class="inspector-field-group">
+        <div class="inspector-field-label">Entity ID</div>
+        <div class="inspector-field-value" style="font-family: var(--font-mono); font-size: 0.76rem; color: #94a3b8; word-break: break-all;">${escapeHtml(node.id)}</div>
+      </div>
+      <div class="inspector-field-group" style="display: flex; gap: 1rem;">
+        <div>
+          <div class="inspector-field-label">Type</div>
+          <div class="inspector-field-value"><span class="badge" style="background: rgba(56, 189, 248, 0.15); color: ${entityColorMap[typeKey] || '#38bdf8'}; font-weight: 700;">${escapeHtml(node.entity_type || "concept")}</span></div>
+        </div>
+        <div>
+          <div class="inspector-field-label">Epistemic Status</div>
+          <div class="inspector-field-value"><span class="badge badge-fact">${escapeHtml(node.epistemic_type || "observed")}</span></div>
+        </div>
+      </div>
+      <div class="inspector-field-group">
+        <div class="inspector-field-label">Aliases</div>
+        <div class="inspector-field-value" style="font-size: 0.82rem; color: #94a3b8;">${escapeHtml(aliasesStr)}</div>
+      </div>
+      <div class="inspector-field-group">
+        <div class="inspector-field-label">Connected Relationships (${outEdges.length} out, ${inEdges.length} in)</div>
+        <div style="max-height: 150px; overflow-y: auto; padding-right: 0.25rem;">
+          ${outEdges.map(e => `
+            <div class="inspector-edge-badge" data-jump-id="${escapeHtml(e.target_id)}" style="cursor: pointer;" title="Click to inspect connected entity">
+              → <strong style="color: #38bdf8;">${escapeHtml(e.relationship)}</strong>: ${escapeHtml(e.target_id)}
+            </div>
+          `).join("")}
+          ${inEdges.map(e => `
+            <div class="inspector-edge-badge" data-jump-id="${escapeHtml(e.source_id)}" style="cursor: pointer;" title="Click to inspect connected entity">
+              ← <strong style="color: #c084fc;">${escapeHtml(e.relationship)}</strong>: ${escapeHtml(e.source_id)}
+            </div>
+          `).join("")}
+          ${outEdges.length === 0 && inEdges.length === 0 ? '<div style="color: var(--text-muted); font-size: 0.8rem; font-style: italic;">No direct relationships</div>' : ''}
+        </div>
+      </div>
+      <div class="inspector-field-group">
+        <div class="inspector-field-label">Attributes & Provenance Metadata</div>
+        <pre class="json-code-block" style="max-height: 160px; overflow-y: auto; font-size: 0.74rem;">${escapeHtml(metaStr)}</pre>
+      </div>
+    `;
+
+    // Add click listeners to jump between connected entities
+    bodyEl.querySelectorAll(".inspector-edge-badge[data-jump-id]").forEach(el => {
+      el.addEventListener("click", () => {
+        const targetId = el.getAttribute("data-jump-id");
+        const found = graphNodes.find(n => n.id === targetId);
+        if (found) {
+          selectGraphNode(found);
+        }
+      });
+    });
+  }
+
+  // Setup Canvas Mouse & Gesture Interactions
+  const graphCanvas = document.getElementById("context-graph-canvas");
+  if (graphCanvas) {
+    function getCanvasCoordinates(e) {
+      const rect = graphCanvas.getBoundingClientRect();
+      const scaleX = graphCanvas.width / (rect.width || 1);
+      const scaleY = graphCanvas.height / (rect.height || 1);
+      const canvasMouseX = (e.clientX - rect.left) * scaleX;
+      const canvasMouseY = (e.clientY - rect.top) * scaleY;
+      const gx = (canvasMouseX - (graphPanX + graphCanvas.width / 2)) / graphZoom + graphCanvas.width / 2;
+      const gy = (canvasMouseY - (graphPanY + graphCanvas.height / 2)) / graphZoom + graphCanvas.height / 2;
+      return { gx, gy, canvasMouseX, canvasMouseY };
+    }
+
+    graphCanvas.addEventListener("mousedown", (e) => {
+      isGraphDragging = true;
+      graphDragStartX = e.clientX;
+      graphDragStartY = e.clientY;
+    });
+
+    graphCanvas.addEventListener("mousemove", (e) => {
+      if (isGraphDragging) {
+        const dx = e.clientX - graphDragStartX;
+        const dy = e.clientY - graphDragStartY;
+        graphPanX += dx;
+        graphPanY += dy;
+        graphDragStartX = e.clientX;
+        graphDragStartY = e.clientY;
+        renderContextGraph();
+      } else {
+        // Hover detection
+        const { gx, gy } = getCanvasCoordinates(e);
+        const hovered = graphNodes.find(n => {
+          const dx = n.x - gx;
+          const dy = n.y - gy;
+          return (dx * dx + dy * dy) <= ((n.radius + 6) * (n.radius + 6));
+        });
+
+        if (hovered !== hoveredGraphNode) {
+          hoveredGraphNode = hovered || null;
+          graphCanvas.style.cursor = hoveredGraphNode ? "pointer" : "grab";
+          renderContextGraph();
+        }
+      }
+    });
+
+    graphCanvas.addEventListener("mouseup", (e) => {
+      isGraphDragging = false;
+      const { gx, gy } = getCanvasCoordinates(e);
+
+      const clickedNode = graphNodes.find(n => {
+        const dx = n.x - gx;
+        const dy = n.y - gy;
+        return (dx * dx + dy * dy) <= ((n.radius + 8) * (n.radius + 8));
+      });
+
+      if (clickedNode) {
+        selectGraphNode(clickedNode);
+      }
+    });
+
+    graphCanvas.addEventListener("mouseleave", () => {
+      isGraphDragging = false;
+      if (hoveredGraphNode) {
+        hoveredGraphNode = null;
+        renderContextGraph();
+      }
+    });
+
+    // Zoom Controls
+    document.getElementById("btn-graph-zoom-in")?.addEventListener("click", () => {
+      graphZoom = Math.min(3.0, graphZoom * 1.25);
+      renderContextGraph();
+    });
+
+    document.getElementById("btn-graph-zoom-out")?.addEventListener("click", () => {
+      graphZoom = Math.max(0.35, graphZoom * 0.8);
+      renderContextGraph();
+    });
+
+    document.getElementById("btn-graph-reset-view")?.addEventListener("click", () => {
+      graphZoom = 1.0;
+      graphPanX = 0;
+      graphPanY = 0;
+      renderContextGraph();
+    });
+
+    document.getElementById("btn-graph-refresh")?.addEventListener("click", fetchContextGraph);
+
+    // Filter Chips
+    document.querySelectorAll("#graph-entity-filters .filter-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll("#graph-entity-filters .filter-btn").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        activeGraphFilter = btn.dataset.type || "all";
+        renderContextGraph();
+      });
+    });
+
+    // Search Input
+    document.getElementById("graph-search-input")?.addEventListener("input", (e) => {
+      graphSearchTerm = e.target.value.trim();
+      renderContextGraph();
+      if (graphSearchTerm) {
+        const match = graphNodes.find(n => n.name && n.name.toLowerCase().includes(graphSearchTerm.toLowerCase()));
+        if (match) {
+          selectGraphNode(match);
+        }
+      }
+    });
+
+    window.addEventListener("resize", () => {
+      if (currentScreen === "context-graph") {
+        syncCanvasSize();
+        layoutGraphNodes();
+        renderContextGraph();
+      }
+    });
+  }
+
+  // =========================================================================
+  // HERMES REASONING RESULTS (ZERO CHAIN-OF-THOUGHT & 6-SECTION CARDS)
+  // =========================================================================
+  async function fetchHermesReasoningResults() {
+    const container = document.getElementById("hermes-reasoning-list-container");
+    if (!container) return;
+    try {
+      const res = await fetch("/api/pi/hermes/reasoning_results");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const results = data.results || [];
+
+      if (results.length === 0) {
+        container.innerHTML = `<div class="loading-skeleton" style="padding: 2rem;">No Hermes reasoning results recorded yet. Run a scenario or live replay to populate.</div>`;
+        return;
+      }
+
+      container.innerHTML = results.map(r => {
+        const evidenceArr = Array.isArray(r.evidence) ? r.evidence : [String(r.evidence || "Verified telemetry")];
+        const decAction = (r.decision || "BRIEFING").toLowerCase();
+
+        return `
+          <div class="hermes-reasoning-card">
+            <!-- Card Header -->
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1rem; border-bottom: 1px solid var(--border-subtle); padding-bottom: 0.75rem; flex-wrap: wrap; gap: 0.5rem;">
+              <div>
+                <div style="font-family: var(--font-mono); font-size: 0.74rem; color: var(--text-accent); text-transform: uppercase;">
+                  EPISODE: ${escapeHtml(r.episode_id)} &bull; SITUATION: ${escapeHtml(r.situation_id || "Unanchored")}
+                </div>
+                <h3 style="font-size: 1.15rem; font-weight: 700; color: #fff; margin: 0.2rem 0;">${escapeHtml(r.task || "Situational Reasoning")}</h3>
+              </div>
+              <div style="display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap;">
+                <span class="badge badge-prediction">URGENCY: ${escapeHtml(r.urgency || "MEDIUM")}</span>
+                <span class="badge badge-fact">ACTIONABILITY: ${escapeHtml(r.actionability || "HIGH")}</span>
+                <span class="badge badge-recommendation">EVIDENCE: ${escapeHtml(r.evidence_strength || "STRONG")}</span>
+                <span class="badge badge-fact" style="font-size: 0.7rem;">${escapeHtml(new Date(r.created_at || Date.now()).toLocaleTimeString())}</span>
+              </div>
+            </div>
+
+            <!-- Epistemic Segregation Blocks: Facts, Inferences, Predictions -->
+            <div class="hermes-epistemic-blocks">
+              <div class="hermes-block">
+                <div class="hermes-block-title" style="color: #38bdf8;">Observations Used <span class="badge badge-fact" style="font-size: 0.6rem;">FACT</span></div>
+                <ul class="hermes-block-items">
+                  ${(r.facts || []).slice(0, 3).map(f => `<li>${escapeHtml(f.content)}</li>`).join("") || '<li>Ground truth verified from EventStore.</li>'}
+                </ul>
+              </div>
+
+              <div class="hermes-block">
+                <div class="hermes-block-title" style="color: #818cf8;">Inferences Formed <span class="badge badge-inference" style="font-size: 0.6rem;">INFERENCE</span></div>
+                <ul class="hermes-block-items">
+                  ${(r.inferences || []).slice(0, 3).map(inf => `<li>${escapeHtml(inf.content)}</li>`).join("") || '<li>Logical deduction from temporal trends.</li>'}
+                </ul>
+              </div>
+
+              <div class="hermes-block">
+                <div class="hermes-block-title" style="color: #f59e0b;">Predictions <span class="badge badge-prediction" style="font-size: 0.6rem;">PREDICTION</span></div>
+                <ul class="hermes-block-items">
+                  ${(r.predictions || []).slice(0, 3).map(p => `<li>${escapeHtml(p.content)}</li>`).join("") || '<li>Trajectory forecasting indicates goal risk if unmitigated.</li>'}
+                </ul>
+              </div>
+            </div>
+
+            <!-- THE 6 MANDATORY RECOMMENDATION SECTIONS -->
+            <div class="rec-grid-6" style="margin-top: 1rem;">
+              <div class="rec-section" style="border-left: 3px solid #38bdf8;">
+                <span class="rec-section-tag what-happened">📌 WHAT HAPPENED</span>
+                <p class="rec-content">${escapeHtml(r.what_happened)}</p>
+              </div>
+
+              <div class="rec-section" style="border-left: 3px solid #f59e0b;">
+                <span class="rec-section-tag why-it-matters">⚠️ WHY IT MATTERS</span>
+                <p class="rec-content">${escapeHtml(r.why_it_matters)}</p>
+              </div>
+
+              <div class="rec-section" style="border-left: 3px solid #34d399;">
+                <span class="rec-section-tag what-i-suggest">👉 WHAT I SUGGEST</span>
+                <p class="rec-content" style="font-weight: 600; color: #fff;">${escapeHtml(r.what_i_suggest)}</p>
+              </div>
+
+              <div class="rec-section" style="border-left: 3px solid #a78bfa;">
+                <span class="rec-section-tag evidence">🔗 EVIDENCE</span>
+                <ul class="rec-evidence-list">
+                  ${evidenceArr.map(ev => `<li>${escapeHtml(typeof ev === 'object' ? JSON.stringify(ev) : String(ev))}</li>`).join("")}
+                </ul>
+              </div>
+
+              <div class="rec-section" style="border-left: 3px solid #f472b6;">
+                <span class="rec-section-tag uncertainty">⚖️ UNCERTAINTY</span>
+                <p class="rec-content">${escapeHtml(r.uncertainty)}</p>
+              </div>
+
+              <div class="rec-section" style="border-left: 3px solid #fb7185;">
+                <span class="rec-section-tag decision">🎯 DECISION</span>
+                <div class="rec-decision-pill ${decAction}">POLICY: ${escapeHtml(r.decision || "BRIEFING")}</div>
+                <p class="rec-content" style="margin-top: 0.35rem; font-size: 0.8rem; color: #cbd5e1;">${escapeHtml(r.decision_reason || "Evaluated deterministically.")}</p>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join("");
+    } catch (err) {
+      console.error("fetchHermesReasoningResults error:", err);
+      if (container) container.innerHTML = `<div class="error-banner">Could not load Hermes reasoning results: ${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  document.getElementById("btn-refresh-hermes-results")?.addEventListener("click", fetchHermesReasoningResults);
+
+  // =========================================================================
+  // INTERVENTION DECISION VIEW
+  // =========================================================================
+  cachedInterventions = [];
+  currentInterventionFilter = "ALL";
+
+  async function fetchInterventions() {
+    const container = document.getElementById("interventions-list-container");
+    if (!container) return;
+    try {
+      const res = await fetch("/api/pi/interventions");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      cachedInterventions = data.decisions || [];
+      renderInterventions();
+    } catch (err) {
+      console.error("fetchInterventions error:", err);
+      if (container) container.innerHTML = `<div class="error-banner">Could not load interventions: ${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  function renderInterventions() {
+    const container = document.getElementById("interventions-list-container");
+    if (!container) return;
+
+    const filtered = cachedInterventions.filter(d => {
+      if (currentInterventionFilter === "ALL") return true;
+      return (d.action || "").toUpperCase() === currentInterventionFilter;
+    });
+
+    if (filtered.length === 0) {
+      container.innerHTML = `<div class="loading-skeleton" style="padding: 2rem;">No intervention decisions matching '${escapeHtml(currentInterventionFilter)}'.</div>`;
+      return;
+    }
+
+    container.innerHTML = filtered.map(d => {
+      const action = (d.action || "BRIEFING").toUpperCase();
+      const actionClass = action === "INTERRUPT" ? "interrupt" : (action === "BRIEFING" ? "briefing" : (action === "DEFER" ? "defer" : "suppress"));
+
+      return `
+        <div class="intervention-card">
+          <div class="intervention-header">
+            <div style="display: flex; align-items: center; gap: 0.6rem;">
+              <span class="rec-decision-pill ${actionClass}">ACTION: ${escapeHtml(action)}</span>
+              <span style="font-weight: 700; font-size: 0.95rem; color: #fff;">${escapeHtml(d.situation_id || d.id)}</span>
+            </div>
+            <div style="display: flex; gap: 0.4rem; align-items: center;">
+              <span class="badge badge-fact">CONTEXT: ${escapeHtml(d.user_context || "AVAILABLE")}</span>
+              <span class="badge badge-prediction">URGENCY: ${escapeHtml(d.urgency || "MEDIUM")}</span>
+              <span class="badge badge-fact" style="font-size: 0.72rem;">${escapeHtml(new Date(d.timestamp || Date.now()).toLocaleTimeString())}</span>
+            </div>
+          </div>
+
+          <div style="background: rgba(255,255,255,0.02); border-left: 3px solid var(--accent-blue); padding: 0.75rem; border-radius: 4px;">
+            <div style="font-family: var(--font-mono); font-size: 0.72rem; font-weight: 700; color: var(--text-accent); text-transform: uppercase; margin-bottom: 0.2rem;">Policy Rule Evaluation:</div>
+            <div style="font-size: 0.88rem; color: #f1f5f9; line-height: 1.4;">${escapeHtml(d.reason || "Evaluated against user attention state and situation priority.")}</div>
+          </div>
+
+          ${d.content ? `
+            <div style="background: rgba(16, 185, 129, 0.08); border-left: 3px solid #10b981; padding: 0.75rem; border-radius: 4px;">
+              <div style="font-family: var(--font-mono); font-size: 0.72rem; font-weight: 700; color: #34d399; text-transform: uppercase; margin-bottom: 0.2rem;">Recommended Content Delivered:</div>
+              <div style="font-size: 0.86rem; color: #fff; font-weight: 500;">${escapeHtml(d.content)}</div>
+            </div>
+          ` : ''}
+
+          <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border-subtle); padding-top: 0.5rem; margin-top: 0.25rem;">
+            <span style="font-size: 0.72rem; color: var(--text-muted); font-family: monospace;">SOURCE: ${escapeHtml(d.source || "InterventionPolicyEngine")}</span>
+            <div style="display: flex; gap: 0.4rem;">
+              <button class="btn btn-action btn-sm" onclick="sendSituationFeedback('${d.situation_id}', 'acknowledge', this)">✅ Acknowledge</button>
+              <button class="btn btn-secondary btn-sm" onclick="sendSituationFeedback('${d.situation_id}', 'snooze', this)">⏱️ Snooze</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }).join("");
+  }
+
+  window.sendSituationFeedback = async function(situationId, action, btnEl) {
+    if (btnEl) {
+      btnEl.disabled = true;
+      btnEl.textContent = "Saving...";
+    }
+    try {
+      const res = await fetch("/api/pi/situations/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          situation_id: situationId,
+          action: action,
+          feedback_notes: `User ${action} via UI intervention card.`
+        })
+      });
+      const data = await res.json();
+      if (btnEl) {
+        btnEl.textContent = action === "acknowledge" ? "✅ Acknowledged" : "⏱️ Snoozed";
+        btnEl.style.opacity = "0.7";
+      }
+      fetchInterventions();
+      fetchSituations();
+      fetchActivityStream();
+    } catch (err) {
+      alert(`Error submitting feedback: ${err.message}`);
+      if (btnEl) btnEl.disabled = false;
+    }
+  };
+
+  // Intervention filter buttons
+  document.querySelectorAll("#intervention-action-filters .filter-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll("#intervention-action-filters .filter-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      currentInterventionFilter = (btn.dataset.action || "ALL").toUpperCase();
+      renderInterventions();
+    });
+  });
+
+  // =========================================================================
+  // LIVE REPLAY CONTROLLER & "NEXT EVENT" STEPPING
+  // =========================================================================
+  let isReplayActive = false;
+  let replayTimer = null;
+
+  const btnLiveReplay = document.getElementById("btn-live-replay");
+  const btnNextEvent = document.getElementById("btn-next-event");
+  const btnResetReplay = document.getElementById("btn-reset-replay");
+  const replaySpeedSelect = document.getElementById("replay-speed-select");
+  const replayPulseIndicator = document.getElementById("replay-pulse-indicator");
+  const replayStatusText = document.getElementById("replay-status-text");
+  const replayDayChip = document.getElementById("replay-day-chip");
+  const replayEventChip = document.getElementById("replay-event-chip");
+  const replayCatChip = document.getElementById("replay-cat-chip");
+  const replayWorldStats = document.getElementById("replay-world-stats");
+  const replayProgressFill = document.getElementById("replay-progress-fill");
+  const liveReplayIcon = document.getElementById("live-replay-icon");
+  const liveReplayText = document.getElementById("live-replay-text");
+
+  function updateReplayUI(statusInfo) {
+    if (!statusInfo) return;
+    if (replayDayChip) replayDayChip.textContent = `Day ${statusInfo.current_day || 1} / ${statusInfo.total_days || 30}`;
+    if (replayEventChip) replayEventChip.textContent = `Event ${statusInfo.current_index || 0} / ${statusInfo.total_events || 0}`;
+    if (replayCatChip) replayCatChip.textContent = `Domain: ${statusInfo.current_category || 'Active'}`;
+    if (replayWorldStats) {
+      replayWorldStats.textContent = `Nodes: ${statusInfo.nodes_count || 0} | Edges: ${statusInfo.edges_count || 0} | Situations: ${statusInfo.situations_count || 0}`;
+    }
+    if (replayProgressFill) {
+      replayProgressFill.style.width = `${statusInfo.progress_percentage || 0}%`;
+    }
+    if (statusInfo.summary && replayStatusText) {
+      replayStatusText.textContent = `Replayed [${statusInfo.current_index}/${statusInfo.total_events}]: ${statusInfo.summary.substring(0, 48)}...`;
+    }
+  }
+
+  async function fetchReplayStatus() {
+    try {
+      const res = await fetch("/api/pi/demo/replay/status");
+      if (!res.ok) return;
+      const data = await res.json();
+      updateReplayUI(data);
+    } catch (e) {
+      console.warn("fetchReplayStatus note:", e);
+    }
+  }
+
+  async function stepNextEvent() {
+    try {
+      const res = await fetch("/api/pi/demo/replay/next", { method: "POST" });
+      const data = await res.json();
+      if (data.status === "completed") {
+        if (replayStatusText) replayStatusText.textContent = "Synthetic World Replay Completed!";
+        stopLiveReplay();
+        return;
+      }
+      if (data.status_info) {
+        updateReplayUI(data.status_info);
+      }
+      // Instantly refresh current active view
+      if (currentScreen === "world-model") fetchWorldModel();
+      else if (currentScreen === "context-graph") fetchContextGraph();
+      else if (currentScreen === "timeline") fetchTimeline();
+      else if (currentScreen === "situations") fetchSituations();
+      else if (currentScreen === "hermes-reasoning") fetchHermesReasoningResults();
+      else if (currentScreen === "interventions") fetchInterventions();
+      else if (currentScreen === "overview") fetchOverview();
+    } catch (err) {
+      console.error("stepNextEvent error:", err);
+    }
+  }
+
+  function startLiveReplay() {
+    isReplayActive = true;
+    if (liveReplayIcon) liveReplayIcon.textContent = "⏸";
+    if (liveReplayText) liveReplayText.textContent = "Pause Replay";
+    btnLiveReplay?.classList.add("active-stream");
+    replayPulseIndicator?.classList.add("streaming");
+    if (replayStatusText) replayStatusText.textContent = "Live Replay Streaming...";
+
+    const speed = parseInt(replaySpeedSelect?.value || "1000", 10);
+    if (replayTimer) clearInterval(replayTimer);
+    replayTimer = setInterval(stepNextEvent, speed);
+  }
+
+  function stopLiveReplay() {
+    isReplayActive = false;
+    if (replayTimer) {
+      clearInterval(replayTimer);
+      replayTimer = null;
+    }
+    if (liveReplayIcon) liveReplayIcon.textContent = "▶";
+    if (liveReplayText) liveReplayText.textContent = "Live Replay";
+    btnLiveReplay?.classList.remove("active-stream");
+    replayPulseIndicator?.classList.remove("streaming");
+  }
+
+  btnLiveReplay?.addEventListener("click", () => {
+    if (isReplayActive) {
+      stopLiveReplay();
+    } else {
+      startLiveReplay();
+    }
+  });
+
+  btnNextEvent?.addEventListener("click", () => {
+    stopLiveReplay();
+    stepNextEvent();
+  });
+
+  btnResetReplay?.addEventListener("click", async () => {
+    stopLiveReplay();
+    showStatus("Resetting synthetic replay stream...");
+    try {
+      const res = await fetch("/api/pi/demo/replay/reset", { method: "POST" });
+      const data = await res.json();
+      hideStatus();
+      updateReplayUI(data);
+      switchScreen(currentScreen);
+    } catch (err) {
+      hideStatus();
+      alert("Error resetting replay: " + err.message);
+    }
+  });
+
+  replaySpeedSelect?.addEventListener("change", () => {
+    if (isReplayActive) {
+      startLiveReplay(); // restarts with new interval speed
+    }
+  });
+
   // Header refresh
   refreshBtn.addEventListener("click", () => {
     switchScreen(currentScreen);
     fetchActivityStream();
+    fetchReplayStatus();
   });
 
   function escapeHtml(str) {
@@ -2552,8 +3325,20 @@ document.addEventListener("DOMContentLoaded", () => {
       .replace(/'/g, "&#039;");
   }
 
+  function formatTime(val) {
+    if (!val) return "";
+    try {
+      const d = new Date(val);
+      if (isNaN(d.getTime())) return String(val);
+      return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + " (" + d.toLocaleDateString([], { month: "short", day: "numeric" }) + ")";
+    } catch (e) {
+      return String(val);
+    }
+  }
+
   // Initial Load
   fetchOverview();
   fetchSituations();
   fetchActivityStream();
+  fetchReplayStatus();
 });

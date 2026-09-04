@@ -1,11 +1,26 @@
 """
 Reasoning Eligibility Gate and Reasoning Budget for Personal Intelligence.
 
-Implements a deterministic filter between SituationEngine and Hermes:
+Implements a deterministic semantic decision filter between SituationEngine and Hermes:
   EVENT -> STATE CHANGE -> SIGNIFICANCE -> SITUATION -> REASONING ELIGIBILITY -> HERMES
 
-Decides whether, when, and with what tool/token budget to invoke Hermes LLM reasoning,
-preventing unnecessary or wasteful API calls on trivial routine events.
+Architectural Concept:
+  "Should PI spend reasoning resources on this situation?"
+  rather than:
+  "Does this situation fit a token budget?"
+
+Evaluates signals including:
+  - Personal significance
+  - Uncertainty / Information gaps
+  - Actionability
+  - Novelty / Change (non-mandatory)
+  - Current user context
+  - Existing reasoning history & duplication
+  - Potential value of additional reasoning
+  - Available computational/attention cost class
+
+Token budget remains an implementation constraint (ReasoningBudget) but does not define
+the conceptual architecture.
 
 Blueprint Reference: §6 Reasoning Eligibility Gate, Change 2 & 3.
 """
@@ -13,7 +28,7 @@ Blueprint Reference: §6 Reasoning Eligibility Gate, Change 2 & 3.
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from personal_intelligence.core.events.models import ensure_timezone_aware, format_iso8601
 from personal_intelligence.core.significance.models import SignificanceAssessment, SignificanceLevel
@@ -21,11 +36,28 @@ from personal_intelligence.core.situations.models import Situation, SituationPri
 
 
 class ReasoningEligibility(str, Enum):
-    """Categorical reasoning eligibility decision."""
+    """Categorical reasoning eligibility decision (backward compatible)."""
     NO_REASONING = "no_reasoning"
     LOCAL_REASONING = "local_reasoning"
     HERMES_REASONING = "hermes_reasoning"
     HERMES_INVESTIGATION_AND_REASONING = "hermes_investigation_and_reasoning"
+
+
+class ReasoningValueLevel(str, Enum):
+    """Estimated value of additional reasoning for a situation."""
+    NEGLIGIBLE = "negligible"
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class ReasoningCostClass(str, Enum):
+    """Tier of computational/attention resource cost."""
+    NONE = "none"
+    LOCAL_ONLY = "local_only"
+    STANDARD = "standard"
+    DEEP_INVESTIGATION = "deep_investigation"
 
 
 class ReasoningBudgetLevel(str, Enum):
@@ -39,7 +71,8 @@ class ReasoningBudgetLevel(str, Enum):
 @dataclass
 class ReasoningBudget:
     """
-    Deterministic budget controlling LLM invocation and external investigation tools.
+    Deterministic implementation budget controlling LLM invocation and external investigation tools.
+    Implementation constraint supporting the semantic reasoning decision.
     """
     budget_level: str = ReasoningBudgetLevel.MEDIUM.value
     allow_hermes_call: bool = True
@@ -124,44 +157,94 @@ class ReasoningBudget:
 
 @dataclass
 class ReasoningEligibilityResult:
-    """Outcome of reasoning eligibility evaluation."""
-    eligibility: str  # ReasoningEligibility enum value
-    budget: ReasoningBudget
-    reason: str
+    """
+    Structured outcome of reasoning eligibility evaluation.
+    
+    Conceptual Question Answered:
+      "Should PI spend reasoning resources on this situation?"
+    """
+    eligible: bool = True
+    reason: str = ""
+    priority: str = "medium"
+    estimated_reasoning_value: str = ReasoningValueLevel.MEDIUM.value
+    cost_class: str = ReasoningCostClass.STANDARD.value
+    eligibility: str = ReasoningEligibility.HERMES_REASONING.value
+    budget: ReasoningBudget = field(default_factory=ReasoningBudget.medium)
     significance_level: str = SignificanceLevel.MEDIUM.value
     situation_id: Optional[str] = None
+    uncertainty_present: bool = False
+    actionability: str = "medium"
+    is_duplicate: bool = False
+    is_stale: bool = False
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def __post_init__(self) -> None:
         self.timestamp = ensure_timezone_aware(self.timestamp, "ReasoningEligibilityResult timestamp")
         if isinstance(self.eligibility, ReasoningEligibility):
             self.eligibility = self.eligibility.value
+        if isinstance(self.estimated_reasoning_value, ReasoningValueLevel):
+            self.estimated_reasoning_value = self.estimated_reasoning_value.value
+        if isinstance(self.cost_class, ReasoningCostClass):
+            self.cost_class = self.cost_class.value
 
     @property
     def requires_hermes(self) -> bool:
-        return self.eligibility in (
+        """Indicates whether external Hermes LLM reasoning is required."""
+        if not self.eligible:
+            return False
+        return self.cost_class in (
+            ReasoningCostClass.STANDARD.value,
+            ReasoningCostClass.DEEP_INVESTIGATION.value,
+        ) or self.eligibility in (
             ReasoningEligibility.HERMES_REASONING.value,
             ReasoningEligibility.HERMES_INVESTIGATION_AND_REASONING.value,
         )
 
     @property
     def requires_investigation(self) -> bool:
-        return self.eligibility == ReasoningEligibility.HERMES_INVESTIGATION_AND_REASONING.value
+        """Indicates whether external tool investigation is required prior to reasoning."""
+        if not self.eligible:
+            return False
+        return (
+            self.cost_class == ReasoningCostClass.DEEP_INVESTIGATION.value
+            or self.eligibility == ReasoningEligibility.HERMES_INVESTIGATION_AND_REASONING.value
+        )
 
     def to_dict(self) -> Dict[str, Any]:
+        """Serializes eligibility result to dictionary."""
         return {
+            "eligible": self.eligible,
+            "reason": self.reason,
+            "priority": self.priority,
+            "estimated_reasoning_value": self.estimated_reasoning_value,
+            "cost_class": self.cost_class,
             "eligibility": self.eligibility,
             "budget": self.budget.to_dict(),
-            "reason": self.reason,
             "significance_level": self.significance_level,
             "situation_id": self.situation_id,
+            "uncertainty_present": self.uncertainty_present,
+            "actionability": self.actionability,
+            "is_duplicate": self.is_duplicate,
+            "is_stale": self.is_stale,
             "timestamp": format_iso8601(self.timestamp),
+            "requires_hermes": self.requires_hermes,
+            "requires_investigation": self.requires_investigation,
         }
 
 
 class ReasoningEligibilityGate:
     """
-    Deterministic gate that evaluates whether a situation warrants Hermes reasoning.
+    Deterministic gate that evaluates whether PI should spend reasoning resources on a situation.
+
+    Replaces token-budget centric gating with multi-signal resource allocation:
+      - Personal significance
+      - Uncertainty / Information gaps
+      - Actionability
+      - Novelty / Change (non-mandatory)
+      - Current user context
+      - Existing reasoning history & duplication
+      - Potential value of additional reasoning
+      - Available computational/attention cost class
     """
 
     def evaluate(
@@ -171,97 +254,262 @@ class ReasoningEligibilityGate:
         is_new_situation: bool = False,
         has_new_events: bool = False,
         is_due_reevaluation: bool = False,
+        user_context: Optional[str] = None,
+        reasoning_history: Optional[List[Any]] = None,
+        actionability: Optional[str] = None,
+        uncertainty: Optional[str] = None,
+        as_of: Optional[datetime] = None,
+        is_cross_context: bool = False,
     ) -> ReasoningEligibilityResult:
         """
-        Determines eligibility and budget for situational reasoning.
+        Determines semantic eligibility, estimated value, and cost tier for situational reasoning.
         """
-        sig_lvl = significance.level.lower()
+        ref_dt = as_of or datetime.now(timezone.utc)
+        sig_lvl = str(significance.level).lower()
         prio = str(situation.priority).lower()
-        has_gap = bool(situation.information_required)
+        has_gap = bool(situation.information_required) or (
+            uncertainty is not None and str(uncertainty).lower() in ("high", "unresolved", "open")
+        )
+        actionable_val = actionability or "medium"
 
-        # 1. Closed or resolved situations never reason
-        if situation.status in (SituationStatus.RESOLVED.value, SituationStatus.DISMISSED.value, SituationStatus.CLOSED.value):
+        # Detect cross-context characteristics from situation type or explicit flag
+        cross_context = is_cross_context or getattr(situation, "is_cross_context", False) or (
+            situation.type in ("cross_context_conflict", "cross_domain_emergence", "multi_domain_shift")
+        )
+
+        # ---------------------------------------------------------------------
+        # 1. Closed or resolved situations -> REJECT (No reasoning needed)
+        # ---------------------------------------------------------------------
+        if situation.status in (
+            SituationStatus.RESOLVED.value,
+            SituationStatus.DISMISSED.value,
+            SituationStatus.CLOSED.value,
+            "resolved",
+            "dismissed",
+            "closed",
+        ):
             return ReasoningEligibilityResult(
-                eligibility=ReasoningEligibility.NO_REASONING.value,
-                budget=ReasoningBudget.low(),
+                eligible=False,
                 reason=f"Situation {situation.id} is {situation.status}; reasoning skipped.",
-                significance_level=sig_lvl,
-                situation_id=situation.id,
-            )
-
-        # 2. Insignificant changes -> NO_REASONING
-        if sig_lvl == SignificanceLevel.NOT_SIGNIFICANT.value and not is_due_reevaluation and not has_gap:
-            return ReasoningEligibilityResult(
+                priority=prio,
+                estimated_reasoning_value=ReasoningValueLevel.NEGLIGIBLE.value,
+                cost_class=ReasoningCostClass.NONE.value,
                 eligibility=ReasoningEligibility.NO_REASONING.value,
                 budget=ReasoningBudget.low(),
-                reason="Change evaluated as NOT_SIGNIFICANT; skipping LLM invocation.",
+                significance_level=sig_lvl,
+                situation_id=situation.id,
+                actionability="none",
+            )
+
+        # ---------------------------------------------------------------------
+        # 2. Stale or expired situations -> REJECT / DEFER
+        # ---------------------------------------------------------------------
+        is_stale = False
+        if hasattr(situation, "compute_freshness"):
+            freshness_val = situation.compute_freshness(as_of=ref_dt)
+            freshness_str = freshness_val.value if hasattr(freshness_val, "value") else str(freshness_val)
+            if freshness_str.lower() in ("stale", "expired"):
+                is_stale = True
+
+        if is_stale and not is_new_situation and not has_new_events:
+            return ReasoningEligibilityResult(
+                eligible=False,
+                reason=f"Situation {situation.id} is stale/expired; reasoning resources withheld for expired context.",
+                priority=prio,
+                estimated_reasoning_value=ReasoningValueLevel.NEGLIGIBLE.value,
+                cost_class=ReasoningCostClass.NONE.value,
+                eligibility=ReasoningEligibility.NO_REASONING.value,
+                budget=ReasoningBudget.low(),
+                significance_level=sig_lvl,
+                situation_id=situation.id,
+                is_stale=True,
+            )
+
+        # ---------------------------------------------------------------------
+        # 3. Insignificant noise -> REJECT (Even if statistically novel!)
+        # ---------------------------------------------------------------------
+        if sig_lvl == SignificanceLevel.NOT_SIGNIFICANT.value and not is_due_reevaluation and not has_gap and not cross_context:
+            return ReasoningEligibilityResult(
+                eligible=False,
+                reason="Change evaluated as NOT_SIGNIFICANT; insignificant noise rejected from reasoning.",
+                priority=prio,
+                estimated_reasoning_value=ReasoningValueLevel.NEGLIGIBLE.value,
+                cost_class=ReasoningCostClass.NONE.value,
+                eligibility=ReasoningEligibility.NO_REASONING.value,
+                budget=ReasoningBudget.low(),
                 significance_level=sig_lvl,
                 situation_id=situation.id,
             )
 
-        # 3. Already evaluated situation with no new events and not due -> NO_REASONING
+        # ---------------------------------------------------------------------
+        # 4. Duplicate reasoning / Low-value repeated analysis -> REJECT / DEFER
+        # ---------------------------------------------------------------------
+        is_duplicate = False
         if not is_new_situation and not has_new_events and not is_due_reevaluation:
+            is_duplicate = True
+
+        # Check explicit reasoning history if supplied
+        if reasoning_history and not has_new_events and not is_due_reevaluation:
+            for ep in reasoning_history:
+                ep_sit_id = getattr(ep, "situation_id", None) or (ep.get("situation_id") if isinstance(ep, dict) else None)
+                if ep_sit_id == situation.id:
+                    is_duplicate = True
+                    break
+
+        if is_duplicate:
             return ReasoningEligibilityResult(
+                eligible=False,
+                reason="Situation already evaluated; no new material observations or changes present.",
+                priority=prio,
+                estimated_reasoning_value=ReasoningValueLevel.LOW.value,
+                cost_class=ReasoningCostClass.NONE.value,
                 eligibility=ReasoningEligibility.NO_REASONING.value,
                 budget=ReasoningBudget.low(),
-                reason="Situation already evaluated and no new material observations present.",
                 significance_level=sig_lvl,
                 situation_id=situation.id,
+                is_duplicate=True,
             )
 
-        # 4. Critical or High Significance with Information Gap -> HERMES_INVESTIGATION_AND_REASONING
-        if has_gap and (sig_lvl in (SignificanceLevel.CRITICAL.value, SignificanceLevel.HIGH.value) or prio in ("critical", "high")):
-            budget = ReasoningBudget.critical() if sig_lvl == SignificanceLevel.CRITICAL.value else ReasoningBudget.high()
-            return ReasoningEligibilityResult(
-                eligibility=ReasoningEligibility.HERMES_INVESTIGATION_AND_REASONING.value,
-                budget=budget,
-                reason=f"High/Critical significance ({sig_lvl}) with open information gap warrants bounded investigation & reasoning.",
-                significance_level=sig_lvl,
-                situation_id=situation.id,
-            )
-
-        # 5. Critical or High Significance without Gap -> HERMES_REASONING (High/Critical budget)
+        # ---------------------------------------------------------------------
+        # 5. Critical Significance -> ALLOW (Critical budget & high reasoning value)
+        # ---------------------------------------------------------------------
         if sig_lvl == SignificanceLevel.CRITICAL.value or prio == "critical":
+            if has_gap:
+                return ReasoningEligibilityResult(
+                    eligible=True,
+                    reason=f"Critical significance ({sig_lvl}) with open information gap warrants bounded investigation & deep reasoning.",
+                    priority="critical",
+                    estimated_reasoning_value=ReasoningValueLevel.CRITICAL.value,
+                    cost_class=ReasoningCostClass.DEEP_INVESTIGATION.value,
+                    eligibility=ReasoningEligibility.HERMES_INVESTIGATION_AND_REASONING.value,
+                    budget=ReasoningBudget.critical(),
+                    significance_level=sig_lvl,
+                    situation_id=situation.id,
+                    uncertainty_present=True,
+                    actionability=actionable_val,
+                )
             return ReasoningEligibilityResult(
+                eligible=True,
+                reason="Critical situation warrants Hermes deep reasoning resources.",
+                priority="critical",
+                estimated_reasoning_value=ReasoningValueLevel.CRITICAL.value,
+                cost_class=ReasoningCostClass.STANDARD.value,
                 eligibility=ReasoningEligibility.HERMES_REASONING.value,
                 budget=ReasoningBudget.critical(),
-                reason="Critical situation warrants Hermes deep reasoning.",
                 significance_level=sig_lvl,
                 situation_id=situation.id,
+                actionability=actionable_val,
             )
 
-        if sig_lvl == SignificanceLevel.HIGH.value or prio == "high" or significance.novelty_impact in ("novel_combination", "highly_unusual"):
+        # ---------------------------------------------------------------------
+        # 6. High Significance & Unresolved Uncertainty -> ALLOW
+        # ---------------------------------------------------------------------
+        if sig_lvl == SignificanceLevel.HIGH.value or prio == "high":
+            if has_gap:
+                return ReasoningEligibilityResult(
+                    eligible=True,
+                    reason=f"High significance ({sig_lvl}) with open information gap warrants bounded investigation & reasoning.",
+                    priority="high",
+                    estimated_reasoning_value=ReasoningValueLevel.HIGH.value,
+                    cost_class=ReasoningCostClass.DEEP_INVESTIGATION.value,
+                    eligibility=ReasoningEligibility.HERMES_INVESTIGATION_AND_REASONING.value,
+                    budget=ReasoningBudget.high(),
+                    significance_level=sig_lvl,
+                    situation_id=situation.id,
+                    uncertainty_present=True,
+                    actionability=actionable_val,
+                )
             return ReasoningEligibilityResult(
+                eligible=True,
+                reason=f"High significance ({sig_lvl}) situation warrants Hermes reasoning resources.",
+                priority="high",
+                estimated_reasoning_value=ReasoningValueLevel.HIGH.value,
+                cost_class=ReasoningCostClass.STANDARD.value,
                 eligibility=ReasoningEligibility.HERMES_REASONING.value,
                 budget=ReasoningBudget.high(),
-                reason=f"High significance ({sig_lvl}) or novel combination warrants Hermes reasoning.",
                 significance_level=sig_lvl,
                 situation_id=situation.id,
+                actionability=actionable_val,
             )
 
-        # 6. Medium Significance -> HERMES_REASONING (Standard Medium budget)
+        # ---------------------------------------------------------------------
+        # 7. High-Value Cross-Context Situation -> ALLOW
+        # ---------------------------------------------------------------------
+        if cross_context:
+            return ReasoningEligibilityResult(
+                eligible=True,
+                reason="Meaningful cross-context situation where reasoning materially synthesizes disparate domains.",
+                priority="high" if prio in ("high", "critical") else "medium",
+                estimated_reasoning_value=ReasoningValueLevel.HIGH.value,
+                cost_class=ReasoningCostClass.DEEP_INVESTIGATION.value if has_gap else ReasoningCostClass.STANDARD.value,
+                eligibility=ReasoningEligibility.HERMES_INVESTIGATION_AND_REASONING.value if has_gap else ReasoningEligibility.HERMES_REASONING.value,
+                budget=ReasoningBudget.high(),
+                significance_level=sig_lvl,
+                situation_id=situation.id,
+                uncertainty_present=has_gap,
+                actionability=actionable_val,
+            )
+
+        # ---------------------------------------------------------------------
+        # 8. Novel combination with moderate+ significance -> ALLOW
+        # ---------------------------------------------------------------------
+        if getattr(significance, "novelty_impact", None) in ("novel_combination", "highly_unusual"):
+            return ReasoningEligibilityResult(
+                eligible=True,
+                reason=f"Novel combination ({significance.novelty_impact}) warrants Hermes exploratory reasoning.",
+                priority="medium",
+                estimated_reasoning_value=ReasoningValueLevel.MEDIUM.value,
+                cost_class=ReasoningCostClass.STANDARD.value,
+                eligibility=ReasoningEligibility.HERMES_REASONING.value,
+                budget=ReasoningBudget.high(),
+                significance_level=sig_lvl,
+                situation_id=situation.id,
+                actionability=actionable_val,
+            )
+
+        # ---------------------------------------------------------------------
+        # 9. Medium Significance or New Actionable Situation -> ALLOW
+        # ---------------------------------------------------------------------
         if sig_lvl == SignificanceLevel.MEDIUM.value or prio == "medium" or is_new_situation:
             if has_gap:
                 return ReasoningEligibilityResult(
+                    eligible=True,
+                    reason="Medium significance situation with information gap warrants bounded investigation.",
+                    priority="medium",
+                    estimated_reasoning_value=ReasoningValueLevel.MEDIUM.value,
+                    cost_class=ReasoningCostClass.DEEP_INVESTIGATION.value,
                     eligibility=ReasoningEligibility.HERMES_INVESTIGATION_AND_REASONING.value,
                     budget=ReasoningBudget.high(),
-                    reason="Medium significance situation with information gap warrants bounded investigation.",
                     significance_level=sig_lvl,
                     situation_id=situation.id,
+                    uncertainty_present=True,
+                    actionability=actionable_val,
                 )
             return ReasoningEligibilityResult(
+                eligible=True,
+                reason="Medium significance situation warrants standard Hermes reasoning resources.",
+                priority="medium",
+                estimated_reasoning_value=ReasoningValueLevel.MEDIUM.value,
+                cost_class=ReasoningCostClass.STANDARD.value,
                 eligibility=ReasoningEligibility.HERMES_REASONING.value,
                 budget=ReasoningBudget.medium(),
-                reason="Medium significance situation warrants standard Hermes reasoning.",
                 significance_level=sig_lvl,
                 situation_id=situation.id,
+                actionability=actionable_val,
             )
 
-        # 7. Low Significance -> LOCAL_REASONING (no Hermes call needed)
+        # ---------------------------------------------------------------------
+        # 10. Low Significance / Routine -> LOCAL ONLY (no Hermes call needed)
+        # ---------------------------------------------------------------------
         return ReasoningEligibilityResult(
+            eligible=True,  # Eligible for local rule updates
+            reason="Low significance situation handled via local deterministic updates without Hermes invocation.",
+            priority="low",
+            estimated_reasoning_value=ReasoningValueLevel.LOW.value,
+            cost_class=ReasoningCostClass.LOCAL_ONLY.value,
             eligibility=ReasoningEligibility.LOCAL_REASONING.value,
             budget=ReasoningBudget.low(),
-            reason="Low significance situation handled via local deterministic updates without Hermes invocation.",
             significance_level=sig_lvl,
             situation_id=situation.id,
+            actionability=actionable_val,
         )

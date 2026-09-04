@@ -88,62 +88,96 @@ class FactProvenance:
         )
 
 
-@dataclass
-class ProbabilisticFact:
+class EpistemicType(str, Enum):
     """
-    Represents a fact with a Bayesian belief confidence score (0.0 to 1.0)
-    and Ebbinghaus temporal memory salience decay.
+    Explicit epistemic state categorization for Personal World Model entities and facts.
+    Strictly segregated to prevent unverified inferences from masquerading as verified facts.
+    """
+    OBSERVED = "observed"
+    DERIVED = "derived"
+    INFERRED = "inferred"
+    PREDICTED = "predicted"
+    RECOMMENDED = "recommended"
+
+
+class EpistemicIntegrityError(ValueError):
+    """Raised when an illegal epistemic promotion or missing evidence lineage is detected."""
+    pass
+
+
+@dataclass
+class EpistemicRecord:
+    """
+    Explicit Epistemic Record for the Personal World Model.
+    Replaces generic Bayesian belief calculations with strict epistemic segregation:
+    OBSERVED, DERIVED, INFERRED, PREDICTED, RECOMMENDED.
+    Every record retains complete source provenance and supporting observation lineage.
     """
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    epistemic_type: str = EpistemicType.OBSERVED.value
+    statement: str = ""
     subject: str = ""
     predicate: str = ""
     object: str = ""
-    belief_score: float = 0.5  # P(Fact | Evidence)
-    salience_score: float = 1.0  # Memory salience
-    status: str = "active"  # active, retracted, expired
-    evidence_ids: List[str] = field(default_factory=list)
+    source: str = "unknown"             # e.g., 'gmail', 'calendar', 'hermes', 'user'
+    source_id: Optional[str] = None     # e.g., message_id, event_id
+    origin_event_id: Optional[str] = None
+    supporting_observation_ids: List[str] = field(default_factory=list)
+    contradictory_observation_ids: List[str] = field(default_factory=list)
+    status: str = "active"              # active, retracted, superseded
     provenance: Dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def __post_init__(self) -> None:
-        self.created_at = ensure_timezone_aware(self.created_at, "ProbabilisticFact created_at")
-        self.updated_at = ensure_timezone_aware(self.updated_at, "ProbabilisticFact updated_at")
+        self.created_at = ensure_timezone_aware(self.created_at, "EpistemicRecord created_at")
+        self.updated_at = ensure_timezone_aware(self.updated_at, "EpistemicRecord updated_at")
+        if isinstance(self.epistemic_type, EpistemicType):
+            self.epistemic_type = self.epistemic_type.value
+        else:
+            self.epistemic_type = str(self.epistemic_type).lower()
 
-    def reinforce_evidence(self, evidence_confidence: float) -> None:
-        """Applies Bayesian update when supporting evidence is observed."""
-        self.belief_score = 1.0 - (1.0 - self.belief_score) * (1.0 - max(0.0, min(1.0, evidence_confidence)))
-        self.salience_score = min(1.0, self.salience_score + 0.2)
-        self.updated_at = datetime.now(timezone.utc)
-
-    def apply_decay(self, elapsed_days: float, decay_lambda: float = 0.05) -> None:
-        """Applies Ebbinghaus exponential temporal decay to memory salience score."""
-        import math
-        self.salience_score = max(0.0, self.salience_score * math.exp(-decay_lambda * max(0.0, elapsed_days)))
+    def promote_to_observation(self) -> None:
+        """Guards against silent promotion of INFERRED -> OBSERVED."""
+        if self.epistemic_type in (EpistemicType.INFERRED.value, EpistemicType.PREDICTED.value, EpistemicType.RECOMMENDED.value):
+            raise EpistemicIntegrityError(
+                f"Cannot silently promote epistemic state '{self.epistemic_type}' to '{EpistemicType.OBSERVED.value}'. "
+                f"Observations require direct verified ground-truth event provenance."
+            )
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
+            "epistemic_type": self.epistemic_type,
+            "statement": self.statement or f"{self.subject} {self.predicate} {self.object}".strip(),
             "subject": self.subject,
             "predicate": self.predicate,
             "object": self.object,
-            "belief_score": self.belief_score,
-            "salience_score": self.salience_score,
+            "source": self.source,
+            "source_id": self.source_id,
+            "origin_event_id": self.origin_event_id,
+            "supporting_observation_ids": self.supporting_observation_ids,
+            "contradictory_observation_ids": self.contradictory_observation_ids,
             "status": self.status,
-            "evidence_ids": self.evidence_ids,
             "provenance": self.provenance,
             "created_at": format_iso8601(self.created_at),
             "updated_at": format_iso8601(self.updated_at),
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ProbabilisticFact":
-        ev_ids = data.get("evidence_ids") or data.get("evidence_ids_json", [])
-        if isinstance(ev_ids, str):
+    def from_dict(cls, data: Dict[str, Any]) -> "EpistemicRecord":
+        supp_ids = data.get("supporting_observation_ids") or data.get("supporting_observation_ids_json", [])
+        if isinstance(supp_ids, str):
             try:
-                ev_ids = json.loads(ev_ids)
+                supp_ids = json.loads(supp_ids)
             except Exception:
-                ev_ids = []
+                supp_ids = []
+        contra_ids = data.get("contradictory_observation_ids") or data.get("contradictory_observation_ids_json", [])
+        if isinstance(contra_ids, str):
+            try:
+                contra_ids = json.loads(contra_ids)
+            except Exception:
+                contra_ids = []
         prov = data.get("provenance") or data.get("provenance_json", {})
         if isinstance(prov, str):
             try:
@@ -152,13 +186,17 @@ class ProbabilisticFact:
                 prov = {}
         return cls(
             id=data.get("id", str(uuid.uuid4())),
+            epistemic_type=data.get("epistemic_type", EpistemicType.OBSERVED.value),
+            statement=data.get("statement", ""),
             subject=data.get("subject", ""),
             predicate=data.get("predicate", ""),
             object=data.get("object", ""),
-            belief_score=float(data.get("belief_score", 0.5)),
-            salience_score=float(data.get("salience_score", 1.0)),
+            source=data.get("source", "unknown"),
+            source_id=data.get("source_id"),
+            origin_event_id=data.get("origin_event_id"),
+            supporting_observation_ids=supp_ids,
+            contradictory_observation_ids=contra_ids,
             status=data.get("status", "active"),
-            evidence_ids=ev_ids,
             provenance=prov,
             created_at=ensure_timezone_aware(data.get("created_at", datetime.now(timezone.utc)), "created_at"),
             updated_at=ensure_timezone_aware(data.get("updated_at", datetime.now(timezone.utc)), "updated_at"),
@@ -455,3 +493,8 @@ class PersonalWorldModelSnapshot:
             "known_patterns": self.known_patterns,
             "emerging_hypotheses": self.emerging_hypotheses,
         }
+
+
+# Backward-compatibility alias for experimental research code
+from personal_intelligence.experimental.probabilistic_fact import ProbabilisticFact
+
